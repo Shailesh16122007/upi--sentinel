@@ -121,3 +121,27 @@ def extract_structured(data: bytes, ext: str) -> DocResult:
     if not rows:
         return DocResult(ok=False, error=f"No records found in the {ext.upper()} file.")
     return DocResult(ok=True, text=text[:200_000], method=f"STRUCTURED_{ext.upper()}", rows=rows, quality=1.0)
+
+
+def extract_email(data: bytes) -> DocResult:
+    """Exported e-mail (.eml): headers that matter + the readable body. HTML is reduced to text."""
+    import email
+    import re
+    from email import policy
+    try:
+        msg = email.message_from_bytes(data, policy=policy.default)
+        head = [f"{h}: {msg[h]}" for h in ("From", "To", "Date", "Subject") if msg[h]]
+        body = msg.get_body(preferencelist=("plain", "html"))
+        text = body.get_content() if body else ""
+        if body is not None and body.get_content_type() == "text/html":
+            text = re.sub(r"<(script|style).*?</\1>", " ", text, flags=re.S | re.I)
+            text = re.sub(r"<br\s*/?>|</p>|</div>|</tr>", "\n", text, flags=re.I)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"&nbsp;", " ", text)
+        text = "\n".join(l.strip() for l in text.splitlines() if l.strip())
+        full = "\n".join(head) + "\n\n" + text
+        if not full.strip():
+            return DocResult(ok=False, error="The e-mail contains no readable text.")
+        return DocResult(ok=True, text=full, method="EMAIL", quality=1.0)
+    except Exception as e:  # noqa: BLE001
+        return DocResult(ok=False, error=f"Could not read e-mail ({type(e).__name__}).")

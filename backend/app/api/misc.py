@@ -3,7 +3,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import demo
-from app.api.deps import require_api_key
+from app.api.deps import current_account, require_api_key, roles
+from app.models import Account
 from app.config import get_settings
 from app.db import get_db
 from app.graph.network import graph
@@ -20,11 +21,11 @@ router = APIRouter(prefix="/api/v1")
 # ------------------------------------------------------------------ system & demo
 
 @router.get("/system/capabilities", tags=["System"], summary="What this server can actually do right now")
-def capabilities(_: str = Depends(require_api_key)):
+def capabilities(_: Account = Depends(current_account)):
     s = get_settings()
     st = stt.status()
     return {
-        "ocr": {"available": ocr.available(), "engine": "tesseract"},
+        "ocr": {"available": ocr.available(), "engine": "tesseract", "languages": ocr.languages()},
         "speech_to_text": {"engine": st["engine"], "loaded": st["loaded"], "error": st["error"],
                            "enabled": s.stt_engine.lower() not in ("none", "off", "disabled")},
         "llm_summary": {"configured": bool(s.anthropic_api_key), "fallback": "deterministic structured summary"},
@@ -34,9 +35,11 @@ def capabilities(_: str = Depends(require_api_key)):
 
 
 @router.post("/demo/load", tags=["Demo"], status_code=201,
-             summary="Create the SYNTHETIC demonstration case and run it through the real pipeline")
-def demo_load(db: Session = Depends(get_db), actor: str = Depends(require_api_key)):
-    c = load_demo(db, actor)
+             summary="Demo customer accounts: create the SYNTHETIC example case and run it through the real pipeline")
+def demo_load(db: Session = Depends(get_db), acc: Account = Depends(roles("VICTIM"))):
+    if not acc.is_demo:
+        raise HTTPException(403, "The synthetic example case is only available to demo accounts.")
+    c = load_demo(db, acc)
     return {"id": c.id, "ref": c.ref, "is_synthetic": True}
 
 

@@ -187,6 +187,8 @@ class Fused:
     channel: str | None = None
     device: str | None = None
     confidence: float = 1.0
+    time_of_day: str | None = None  # "22:32" when the evidence states a time but no date
+    selected: bool = False          # chosen as disputed by a person
 
     @property
     def sources(self) -> list[str]:
@@ -204,6 +206,9 @@ def _collect(cluster: list[Mention], approx: date | None) -> tuple[dict, list[di
         if when:
             eid = (m.dt[2] if m.dt else (m.time_only or m.date_only)[1])
             f["time"].append({"value": when.isoformat(), "precision": prec, "evidence_id": m.evidence_id, "entity_id": eid})
+        elif m.time_only:  # time stated, date unknown: keep the time, never invent a date
+            f["time_of_day"].append({"value": m.time_only[0].strftime("%H:%M"), "evidence_id": m.evidence_id,
+                                     "entity_id": m.time_only[1]})
         for name, attr in (("beneficiary_vpa", "vpas"), ("beneficiary_name", "payees"), ("status", "status"),
                            ("channel", "channel"), ("account", "account"), ("bank", "bank"), ("device", "device")):
             for v, eid in getattr(m, attr).items():
@@ -249,7 +254,25 @@ def _pick(values: list[dict]):
     return max(by.items(), key=lambda kv: (len(kv[1]), str(kv[0])))[0]
 
 
-def fuse(evidence: list[dict], entities: list[dict], approx: date | None, claimed: float | None) -> list[Fused]:
+def matches_selection(fz: "Fused", sel: dict | None) -> bool:
+    """Does this transaction match the one a person marked as disputed? Several attributes, never amount alone
+    when a time or reference is available."""
+    if not sel:
+        return False
+    refs = {x["value"] for x in fz.fields.get("reference", [])}
+    if sel.get("reference"):
+        return any(r == sel["reference"] or r.endswith(sel["reference"]) or sel["reference"].endswith(r) for r in refs)
+    if sel.get("amount") is None or fz.amount is None or abs(fz.amount - sel["amount"]) > 0.5:
+        return False
+    if sel.get("occurred_at") and fz.occurred_at:
+        return abs((fz.occurred_at - datetime.fromisoformat(sel["occurred_at"])).total_seconds()) <= 600
+    if sel.get("time_of_day") or fz.time_of_day:
+        return sel.get("time_of_day") == fz.time_of_day
+    return set(sel.get("sources") or []) & set(fz.sources) != set()
+
+
+def fuse(evidence: list[dict], entities: list[dict], approx: date | None, claimed: float | None,
+         selection: dict | None = None) -> list[Fused]:
     by_ev = defaultdict(list)
     for e in entities:
         by_ev[e["evidence_id"]].append(e)
@@ -325,11 +348,17 @@ def fuse(evidence: list[dict], entities: list[dict], approx: date | None, claime
         fz.channel = _pick(fz.fields.get("channel", []))
         fz.device = _pick(fz.fields.get("device", []))
         fz.confidence = min([l[2] for l in fz.links], default=1.0)
+        if not fz.occurred_at:
+            fz.time_of_day = _pick(fz.fields.get("time_of_day", []))
 
-    # choose the disputed transaction
+    # choose the disputed transaction: a person's selection first, then the customer's stated amount,
+    # then the best-supported transaction
+    for fz in fused:
+        fz.selected = matches_selection(fz, selection)
+
     def score(fz: Fused):
         claimed_hit = 1 if (claimed and fz.amount and abs(fz.amount - claimed) < 1) else 0
-        return (claimed_hit, len(fz.sources), fz.amount or 0)
+        return (fz.selected, claimed_hit, len(fz.sources), fz.amount or 0)
     if fused:
         max(fused, key=score).kind = "DISPUTED"
 

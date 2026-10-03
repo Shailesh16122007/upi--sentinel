@@ -54,6 +54,48 @@ def available() -> bool:
     return path is not None
 
 
+# Tesseract script name (from orientation & script detection) -> language model
+SCRIPT_LANG = {"Devanagari": "hin", "Tamil": "tam", "Bengali": "ben", "Telugu": "tel", "Kannada": "kan",
+               "Malayalam": "mal", "Gujarati": "guj", "Gurmukhi": "pan"}
+_installed: set[str] | None = None
+
+
+def installed() -> set[str]:
+    global _installed
+    if _installed is None:
+        try:
+            import pytesseract
+            _installed = set(pytesseract.get_languages(config=""))
+        except Exception:  # noqa: BLE001
+            _installed = set()
+    return _installed
+
+
+def languages() -> str:
+    """Language models available to OCR. With 'auto', English is always used and an Indian-script model is added
+    per image only when script detection finds that script (loading every model at once causes digit misreads,
+    e.g. '₹25,000' read as '425,000')."""
+    cfg = get_settings().ocr_lang
+    if cfg != "auto":
+        return cfg
+    return "+".join(["eng"] + [l for l in SCRIPT_LANG.values() if l in installed()])
+
+
+def _script_lang(img: Image.Image) -> str | None:
+    if get_settings().ocr_lang != "auto":
+        return None
+    try:
+        import pytesseract
+        osd = pytesseract.image_to_osd(img, config="--psm 0 -c min_characters_to_try=10")
+    except Exception:  # noqa: BLE001 — OSD fails on sparse screenshots; English only then
+        return None
+    for line in osd.splitlines():
+        if line.startswith("Script:"):
+            lang = SCRIPT_LANG.get(line.split(":", 1)[1].strip())
+            return lang if lang in installed() else None
+    return None
+
+
 def _prepare(img: Image.Image) -> Image.Image:
     img = ImageOps.exif_transpose(img)
     if img.mode in ("RGBA", "LA", "P"):
@@ -72,9 +114,9 @@ def _prepare(img: Image.Image) -> Image.Image:
     return ImageOps.autocontrast(g, cutoff=1)
 
 
-def _run(img: Image.Image, psm: int) -> tuple[list[dict], float, int]:
+def _run(img: Image.Image, psm: int, lang: str) -> tuple[list[dict], float, int]:
     import pytesseract
-    d = pytesseract.image_to_data(img, lang=get_settings().ocr_lang, config=f"--oem 1 --psm {psm}",
+    d = pytesseract.image_to_data(img, lang=lang, config=f"--oem 1 --psm {psm}",
                                   output_type=pytesseract.Output.DICT)
     lines: dict[tuple, list[tuple[str, float]]] = {}
     for i, word in enumerate(d["text"]):
@@ -102,9 +144,12 @@ def ocr_image(data: bytes) -> OcrResult:
     except (UnidentifiedImageError, OSError):
         return OcrResult(ok=False, error="The file could not be opened as an image.")
     prepared = _prepare(img)
+    cfg = get_settings().ocr_lang
+    extra = _script_lang(prepared)
+    lang = cfg if cfg != "auto" else ("eng+" + extra if extra else "eng")
     best: tuple[list[dict], float, int] | None = None
     for psm in (6, 11):  # uniform block first, then sparse text (UPI app layouts are sparse)
-        lines, q, n = _run(prepared, psm)
+        lines, q, n = _run(prepared, psm, lang)
         if best is None or (n >= 3 and q * min(n, 40) > best[1] * min(best[2], 40)):
             best = (lines, q, n)
         if n >= 8 and q >= 0.8:
@@ -114,4 +159,4 @@ def ocr_image(data: bytes) -> OcrResult:
     if n == 0 or quality < MIN_QUALITY:
         return OcrResult(ok=False, text=text, lines=lines, quality=quality,
                          error="Could not reliably extract text from this image.")
-    return OcrResult(ok=True, text=text, lines=lines, quality=round(quality, 3))
+    return OcrResult(ok=True, text=text, lines=lines, quality=round(quality, 3), engine=f"tesseract:{lang}")

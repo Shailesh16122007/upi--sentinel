@@ -12,7 +12,7 @@ UUIDs are 36-char strings so one schema works on both engines. Timestamps are ti
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -57,15 +57,31 @@ class Case(Base):
     statement: Mapped[str] = mapped_column(Text)
     approx_date: Mapped[date | None] = mapped_column(Date)
     claimed_amount: Mapped[float | None] = mapped_column(Float)
-    # OPEN -> UNDER_REVIEW -> REPORT_READY -> CLOSED
-    status: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)
-    claim_type: Mapped[str | None] = mapped_column(String(24))  # derived from statement wording
+    # Lifecycle state machine — see services/lifecycle.py for the valid transitions.
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT", index=True)
+    claim_type: Mapped[str | None] = mapped_column(String(40))  # derived from statement wording
     is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     linked_risk_txn_id: Mapped[str | None] = mapped_column(String(36))
     analysis: Mapped[dict | None] = mapped_column(JSON)  # counts, completeness, ML, summary
     analyzed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+    # --- V2: ownership, routing and lifecycle
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"), index=True)
+    bank_org: Mapped[str | None] = mapped_column(String(80), index=True)  # bank the case is routed to
+    submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    escalated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    priority: Mapped[str | None] = mapped_column(String(12))  # NORMAL | HIGH (set by investigators)
+    # Configurable bank dispositions (codes from case_status_options)
+    bank_outcome: Mapped[str | None] = mapped_column(String(40))
+    reversal_status: Mapped[str | None] = mapped_column(String(40))
+    account_action: Mapped[str | None] = mapped_column(String(40))
+    authority_status: Mapped[str | None] = mapped_column(String(40))
+    # Which transaction the customer/investigator says is disputed: {reference, amount, occurred_at}
+    disputed_selection: Mapped[dict | None] = mapped_column(JSON)
 
     evidence: Mapped[list["EvidenceFile"]] = relationship(back_populates="case", cascade="all, delete-orphan",
                                                           order_by="EvidenceFile.seq")
@@ -99,6 +115,11 @@ class EvidenceFile(Base):
     error: Mapped[str | None] = mapped_column(String(500))
     uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # --- V2
+    uploaded_by_id: Mapped[str | None] = mapped_column(String(36))
+    uploaded_by_role: Mapped[str | None] = mapped_column(String(12))
+    integrity: Mapped[dict | None] = mapped_column(JSON)  # image manipulation indicators (never a verdict)
+    language: Mapped[dict | None] = mapped_column(JSON)   # detected language / script mix
 
     case: Mapped[Case] = relationship(back_populates="evidence")
     entities: Mapped[list["ExtractedEntity"]] = relationship(back_populates="evidence", cascade="all, delete-orphan")
@@ -163,6 +184,8 @@ class TimelineEvent(Base):
     entity_ids: Mapped[list] = mapped_column(JSON, default=list)
     # DOCUMENTED (record states it) | STATEMENT (a person's claim) | SYSTEM (platform action)
     reliability: Mapped[str] = mapped_column(String(16))
+    simple: Mapped[str | None] = mapped_column(Text)          # plain-language version for the customer
+    source_kinds: Mapped[list | None] = mapped_column(JSON)   # ["UPI screenshot", "Bank SMS"]
 
 
 class Finding(Base):
@@ -178,6 +201,9 @@ class Finding(Base):
     is_conflict: Mapped[bool] = mapped_column(Boolean, default=False)
     sources: Mapped[list] = mapped_column(JSON, default=list)  # [{evidence_id, entity_id?, label}]
     data: Mapped[dict] = mapped_column(JSON, default=dict)
+    why: Mapped[str | None] = mapped_column(Text)              # why it matters
+    certainty: Mapped[str | None] = mapped_column(String(12))  # High | Medium | Low
+    certainty_basis: Mapped[str | None] = mapped_column(String(300))
 
 
 class EvidenceRelationship(Base):
@@ -200,15 +226,43 @@ class InvestigatorNote(Base):
     author: Mapped[str] = mapped_column(String(80))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    # --- V2: human notes are never overwritten by analysis
+    author_id: Mapped[str | None] = mapped_column(String(36))
+    author_role: Mapped[str | None] = mapped_column(String(12))
+    visibility: Mapped[str | None] = mapped_column(String(16))  # BANK_AND_CYBER | CYBER_ONLY
+    finding_code: Mapped[str | None] = mapped_column(String(40))  # human review of a system finding
+    finding_title: Mapped[str | None] = mapped_column(String(200))
+    assessment: Mapped[str | None] = mapped_column(String(16))   # AGREE | DISAGREE | NEEDS_REVIEW
 
 
 class Report(Base):
+    """One logical report per case and audience. storage_path/sha256 point to the current version."""
     __tablename__ = "reports"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
     storage_path: Mapped[str] = mapped_column(String(512))
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    audience: Mapped[str | None] = mapped_column(String(12))  # VICTIM | BANK | CYBER
+    version: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ReportVersion(Base):
+    __tablename__ = "report_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    report_id: Mapped[str] = mapped_column(ForeignKey("reports.id"), index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(8), default="PDF")  # PDF | JSON
+    storage_path: Mapped[str] = mapped_column(String(512))
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    created_by: Mapped[str | None] = mapped_column(String(36))
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    case_status: Mapped[str | None] = mapped_column(String(24))
+    analyzed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    changes: Mapped[str | None] = mapped_column(String(500))  # what changed since the previous version
 
 
 class AuditLog(Base):
@@ -222,6 +276,8 @@ class AuditLog(Base):
     evidence_id: Mapped[str | None] = mapped_column(String(36))
     source: Mapped[str] = mapped_column(String(40), default="api")
     result: Mapped[str] = mapped_column(String(255), default="OK")
+    actor_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    actor_role: Mapped[str | None] = mapped_column(String(12))
 
 
 # =====================================================================================
@@ -312,3 +368,221 @@ class RiskSignal(Base):
     weight: Mapped[float] = mapped_column(Float)
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     transaction: Mapped[Transaction] = relationship(back_populates="signals")
+
+
+# =====================================================================================
+# V2: people, roles and permissions
+# =====================================================================================
+
+class Role(Base):
+    __tablename__ = "roles"
+    code: Mapped[str] = mapped_column(String(12), primary_key=True)  # VICTIM | BANK | CYBER
+    label: Mapped[str] = mapped_column(String(60))
+    description: Mapped[str] = mapped_column(String(255))
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class Account(Base):
+    """A person who signs in. (The risk module's `users` table holds synthetic payers, not logins.)"""
+    __tablename__ = "accounts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    email: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    user_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)  # V102, B201, C301
+    name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(ForeignKey("roles.code"), index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    org: Mapped[str | None] = mapped_column(String(80), index=True)  # bank name / cyber unit
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False)  # synthetic background people (no login)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class VictimProfile(Base):
+    __tablename__ = "victim_profiles"
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    phone: Mapped[str | None] = mapped_column(String(20))
+    bank_name: Mapped[str | None] = mapped_column(String(80))
+    own_vpa: Mapped[str | None] = mapped_column(String(120))
+    city: Mapped[str | None] = mapped_column(String(80))
+    preferred_language: Mapped[str | None] = mapped_column(String(20))
+
+
+class BankProfile(Base):
+    __tablename__ = "bank_profiles"
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    bank_name: Mapped[str] = mapped_column(String(80))
+    branch: Mapped[str | None] = mapped_column(String(120))
+    employee_id: Mapped[str | None] = mapped_column(String(40))
+    designation: Mapped[str | None] = mapped_column(String(80))
+
+
+class AuthorityProfile(Base):
+    __tablename__ = "authority_profiles"
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    unit: Mapped[str] = mapped_column(String(120))
+    jurisdiction: Mapped[str | None] = mapped_column(String(120))
+    badge_no: Mapped[str | None] = mapped_column(String(40))
+    designation: Mapped[str | None] = mapped_column(String(80))
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # sha256 of the bearer token
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+# =====================================================================================
+# V2: case lifecycle
+# =====================================================================================
+
+class CaseStatusOption(Base):
+    """Configurable dispositions (banks use different wording). org NULL = platform default."""
+    __tablename__ = "case_status_options"
+    __table_args__ = (UniqueConstraint("org", "category", "code"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    org: Mapped[str | None] = mapped_column(String(80), index=True)
+    category: Mapped[str] = mapped_column(String(20))  # BANK_OUTCOME | REVERSAL | ACCOUNT_ACTION | AUTHORITY
+    code: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(80))
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CaseAssignment(Base):
+    __tablename__ = "case_assignments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    role: Mapped[str] = mapped_column(String(12))
+    assigned_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Investigation(Base):
+    """A bank or cyber-crime investigation of a case (one per role)."""
+    __tablename__ = "investigations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    role: Mapped[str] = mapped_column(String(12))
+    opened_by: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"))
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN")  # OPEN | COMPLETED
+    conclusion: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class CaseAction(Base):
+    """Every lifecycle transition or disposition change. Never edited after creation."""
+    __tablename__ = "case_actions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(36))
+    actor_role: Mapped[str] = mapped_column(String(12))
+    action: Mapped[str] = mapped_column(String(40))
+    from_status: Mapped[str | None] = mapped_column(String(24))
+    to_status: Mapped[str | None] = mapped_column(String(24))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    note: Mapped[str | None] = mapped_column(Text)
+    victim_message: Mapped[str | None] = mapped_column(String(300))  # plain-language update shown to the customer
+
+
+class EvidenceRequest(Base):
+    __tablename__ = "evidence_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    requested_by: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"))
+    requested_role: Mapped[str] = mapped_column(String(12))  # BANK | CYBER
+    target_role: Mapped[str] = mapped_column(String(12))     # VICTIM | BANK
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(12), default="OPEN", index=True)  # OPEN | FULFILLED | CANCELLED
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    fulfilled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    fulfilled_by: Mapped[str | None] = mapped_column(String(36))
+    response_note: Mapped[str | None] = mapped_column(Text)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class EvidenceHash(Base):
+    """Chain-of-custody record. Proves the stored file is unchanged since upload — not that its content is true."""
+    __tablename__ = "evidence_hashes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    evidence_id: Mapped[str] = mapped_column(ForeignKey("evidence_files.id"), unique=True, index=True)
+    algorithm: Mapped[str] = mapped_column(String(16), default="SHA-256")
+    digest: Mapped[str] = mapped_column(String(64), index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    computed_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_result: Mapped[str | None] = mapped_column(String(16))  # MATCH | MISMATCH | MISSING
+    verify_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# =====================================================================================
+# V2: cross-case intelligence
+# =====================================================================================
+
+class EntityRelationship(Base):
+    """Identifier → case link (graph edge). Rebuilt from a case's analysis every time it changes."""
+    __tablename__ = "entity_relationships"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(16), index=True)  # UPI_ID | PHONE | ACCOUNT | URL | EMAIL | UTR
+    value: Mapped[str] = mapped_column(String(255), index=True)       # normalized
+    role: Mapped[str] = mapped_column(String(20))  # BENEFICIARY | CONTACT | MENTIONED | TRANSACTION_REF
+    amount: Mapped[float | None] = mapped_column(Float)
+    occurred_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class CaseRelationship(Base):
+    """'Possible related case' — two cases share an identifier. A person may confirm or dismiss it."""
+    __tablename__ = "case_relationships"
+    __table_args__ = (UniqueConstraint("case_id", "related_case_id", "entity_type", "value"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    related_case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(16))
+    value: Mapped[str] = mapped_column(String(255))
+    basis: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(12), default="POSSIBLE")  # POSSIBLE | LINKED | DISMISSED
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36))
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class MuleCluster(Base):
+    """Cases sharing a beneficiary/contact identifier. Figures are recomputed from case records, never entered."""
+    __tablename__ = "mule_clusters"
+    __table_args__ = (UniqueConstraint("entity_type", "value", "is_synthetic"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_type: Mapped[str] = mapped_column(String(16))
+    value: Mapped[str] = mapped_column(String(255), index=True)
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    case_ids: Mapped[list] = mapped_column(JSON, default=list)
+    case_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_amount: Mapped[float] = mapped_column(Float, default=0)
+    amount_known_cases: Mapped[int] = mapped_column(Integer, default=0)
+    first_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

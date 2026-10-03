@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     max_upload_mb: int = 15
     max_audio_mb: int = 40
     max_files_per_case: int = 60
+    session_hours: int = 12
+    # Show the demo sign-in details on the login page (dev/demo deployments only)
+    show_demo_accounts: bool = True
+    # Create the synthetic background complaints used to demonstrate related-case detection
+    seed_demo: bool = True
 
     # Speech-to-text (local). faster-whisper downloads the model on first use, then works offline.
     # Set SENTINEL_STT_ENGINE=none to disable; the app then shows "Audio transcription unavailable".
@@ -54,7 +59,8 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
-    ocr_lang: str = "eng"
+    # "auto" = English plus any installed Indian-language models (hin, tam, ben, tel, kan, mal, guj, pan, mar)
+    ocr_lang: str = "auto"
     # Minimum customer history rows before Isolation Forest is run.
     ml_min_history: int = 20
 

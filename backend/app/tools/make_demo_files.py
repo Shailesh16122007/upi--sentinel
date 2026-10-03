@@ -59,6 +59,63 @@ def payment_screen(path: Path, lines: list[tuple[str, int, bool, str]], syntheti
     img.save(path)
 
 
+def wrap(text: str, f: ImageFont.FreeTypeFont, width: int) -> list[str]:
+    out, cur = [], ""
+    for w in text.split():
+        t = (cur + " " + w).strip()
+        if f.getlength(t) > width and cur:
+            out.append(cur)
+            cur = w
+        else:
+            cur = t
+    return out + ([cur] if cur else [])
+
+
+def sms_screen(path: Path, sender: str, when: str, body: str) -> None:
+    img = Image.new("RGB", (560, 980), "#FFFFFF")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 560, 70], fill="#F2F4F7")
+    d.text((28, 35), f"Messages  ·  {sender}", font=font(22, True), fill="#0F1B2D", anchor="lm")
+    d.text((280, 110), when, font=font(17), fill="#4A5568", anchor="mm")
+    f = font(21)
+    lines = wrap(body, f, 430)
+    h = 30 + 32 * len(lines)
+    d.rounded_rectangle([30, 140, 500, 140 + h], radius=16, fill="#EEF1F5")
+    for i, line in enumerate(lines):
+        d.text((50, 160 + i * 32), line, font=f, fill="#0F1B2D")
+    watermark(img)
+    img.save(path)
+
+
+def chat_screen(path: Path, title: str, day: str, msgs: list[tuple[bool, str, str]]) -> None:
+    img = Image.new("RGB", (560, 1100), "#FFFFFF")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 560, 70], fill="#F2F4F7")
+    d.text((28, 35), title, font=font(22, True), fill="#0F1B2D", anchor="lm")
+    d.text((280, 100), day, font=font(17), fill="#4A5568", anchor="mm")
+    y, f = 130, font(20)
+    for mine, text, t in msgs:
+        lines = wrap(text, f, 330)
+        h = 26 + 30 * len(lines) + 22
+        x0 = 190 if mine else 24
+        d.rounded_rectangle([x0, y, x0 + 350, y + h], radius=14, fill="#E6F0FB" if mine else "#EEF1F5")
+        for i, line in enumerate(lines):
+            d.text((x0 + 16, y + 12 + i * 30), line, font=f, fill="#0F1B2D")
+        d.text((x0 + 334, y + h - 10), t, font=font(15), fill="#4A5568", anchor="rb")
+        y += h + 16
+    watermark(img)
+    img.save(path)
+
+
+CHAT = [
+    (False, "Madam main Demo Bank KYC department se bol raha hoon", "10:15 PM"),
+    (False, "Aapka KYC update nahi hua toh account aaj raat block ho jayega", "10:16 PM"),
+    (False, "Verification ke liye AnyDesk download karo, main help karunga", "10:18 PM"),
+    (False, "Request aayegi, approve karo aur UPI PIN daalo turant", "10:20 PM"),
+    (True, "Ok sir", "10:21 PM"),
+    (False, "Call karo 9000099887 pe agar problem ho", "10:22 PM"),
+]
+
 _ESPEAK: dict = {}
 
 
@@ -141,6 +198,10 @@ def main() -> None:
     (DEMO / "bank_sms.txt").write_text(
         "Dear Customer, your A/c XX4417 is debited by Rs.25,000.00 on 01-10-26 22:32 for UPI payment to rahultraders@ybl. "
         "UPI Ref No 427613847291. If not done by you, report to Demo Bank. -Demo Bank\n")
+    sms_screen(DEMO / "bank_sms_screenshot.png", "DM-DEMOBK", "Wed, 1 Oct 2026 · 10:32 PM",
+               "Dear Customer, your A/c XX4417 is debited by Rs.25,000.00 on 01-10-26 22:32 for UPI payment to "
+               "rahultraders@ybl. UPI Ref No 427613847291. If not done by you, report to Demo Bank. -Demo Bank")
+    chat_screen(DEMO / "chat_screenshot.png", "+91 90000 99887", "01 Oct 2026", CHAT)
     (DEMO / "scam_call_transcript.txt").write_text("\n".join(f"[{s // 60:02d}:{s % 60:02d}] {t}" for s, t in CALL_LINES) + "\n")
     tts(CALL_LINES, DEMO / "scam_call.wav")
     history_csv(DEMO / "transaction_history.csv", datetime(2026, 9, 30, 20, 0))

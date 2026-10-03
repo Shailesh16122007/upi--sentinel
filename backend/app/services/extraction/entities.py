@@ -10,21 +10,27 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
+from app.services.extraction import lexicon
+
 IST = ZoneInfo("Asia/Kolkata")
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
 # Tesseract commonly misreads the rupee sign; these are accepted only when directly followed by digits.
 RUPEE_LOOKALIKE = "¥%=€£zZ"
 RE_AMOUNT = re.compile(
-    r"(?P<cur>₹|rs\.?|inr|rupees|[" + re.escape(RUPEE_LOOKALIKE) + r"])\s?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
-    r"(?:\s?/-)?", re.I)
-RE_AMOUNT_WORD = re.compile(r"(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s?(?:rupees|rs\.?|inr)\b", re.I)
+    r"(?P<cur>₹|rs\.?|inr|rupees|रु\.?|रुपये|[" + re.escape(RUPEE_LOOKALIKE) + r"])\s?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+    r"(?:\s?/-)?(?P<tail>[OoIlSB|]?)", re.I)
+RE_AMOUNT_WORD = re.compile(r"(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s?(?:rupees|rs\.?|inr|रुपये)(?![a-z])", re.I)
+RE_EMAIL = re.compile(r"\b[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*\.[a-z]{2,24}\b", re.I)
+# Indian (1,23,45,678) or international (1,234,567) digit grouping; anything else is a likely OCR slip
+RE_GROUPING_OK = re.compile(r"^(?:\d{1,2}(?:,\d{2})*,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$")
 RE_BARE_AMOUNT = re.compile(r"^\s*(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)\s*$")  # "25,000" alone on a line
 
 RE_DATE_DMY_TEXT = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-/.,]*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s\-/.,']*(\d{4}|\d{2})\b", re.I)
 RE_DATE_MDY_TEXT = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b", re.I)
 RE_DATE_NUM = re.compile(r"\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4}|\d{2})\b")
 RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})")
+RE_TIME_ONLY_LINE = re.compile(r"^\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*(?:[✓✔]{1,2})?\s*$", re.I)
 RE_TIME = re.compile(r"(?<![\d:])(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([ap]\.?\s?m\.?)?(?![\d])", re.I)
 
 REF_LABEL = re.compile(
@@ -56,15 +62,6 @@ STATUS = [("DEBITED", r"\bdebited\b|\bdebit\b|\bwithdrawn\b|\bsent\b|\bpaid\b"),
           ("PENDING", r"\bpending\b|\bprocessing\b"), ("REVERSED", r"\breversed\b|\brefunded\b|\breversal\b")]
 CHANNELS = [("UPI", r"\bupi\b"), ("IMPS", r"\bimps\b"), ("NEFT", r"\bneft\b"), ("RTGS", r"\brtgs\b"), ("AEPS", r"\baeps\b"),
             ("COLLECT_REQUEST", r"collect request|payment request|approve (?:the )?request")]
-LANGUAGE = {
-    "URGENCY": r"\bimmediately\b|\burgent(?:ly)?\b|\btoday\b|\bwithin \d+ (?:minutes|hours)\b|\blast chance\b",
-    "THREAT": r"\bblock(?:ed)?\b|\bsuspend(?:ed)?\b|\bfrozen\b|\bfreeze\b|\blegal action\b|\barrest\b|\bdeactivat",
-    "CREDENTIAL_REQUEST": r"\botp\b|\bupi pin\b|\bmpin\b|\bpin\b|\bcvv\b|\bpassword\b",
-    "KYC": r"\bkyc\b|\bpan card\b|\baadhaar\b",
-    "REMOTE_ACCESS": r"anydesk|teamviewer|quick ?support|screen ?shar|rustdesk",
-    "REFUND_REWARD": r"\brefund\b|\bcashback\b|\breward\b|\bprize\b|\blottery\b|\bcredited back\b",
-    "IMPERSONATION": r"calling from (?:your |the )?\w*\s?(?:bank|kyc|customer care|support)|\bbank (?:officer|executive|manager)\b|\brbi\b|\bcyber cell\b",
-}
 
 
 @dataclass
@@ -130,6 +127,15 @@ def parse_times(line: str, date_spans: list[tuple[int, int]]) -> list[tuple[time
     return out
 
 
+def amount_review(num: str, tail: str, after: str, method: str) -> str | None:
+    """Reasons an extracted amount should be checked by a person instead of trusted."""
+    if "," in num and not RE_GROUPING_OK.match(num):
+        return f"Unusual digit grouping '{num}' — possibly misread"
+    if method in ("OCR", "PDF_OCR") and (tail or (after and after.isalpha() and after.upper() in "OILSB")):
+        return f"Letter next to the digits ('{num}{tail or after}') — possibly misread"
+    return None
+
+
 def _num(s: str) -> float:
     return float(s.replace(",", ""))
 
@@ -151,6 +157,7 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         ents.append(e)
 
     prev = ""
+    bubble: list[str] = []  # text lines since the last time-only line (a chat message before its timestamp)
     for i, raw in enumerate(lines):
         line = raw.strip()
         if not line:
@@ -160,6 +167,14 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         loc = f"{locator_prefix} {i + 1}"
         low = line.lower()
         ctx = line[:300]
+        if RE_TIME_ONLY_LINE.match(line):
+            if bubble:
+                ctx = " ".join(bubble)[:300]
+            bubble = []
+        elif parse_dates(line) and len(line) <= 30:  # a date header starts a new group of messages
+            bubble = []
+        else:
+            bubble = (bubble + [line])[-3:]
 
         # --- dates & times ---
         dates = parse_dates(line)
@@ -190,14 +205,22 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
             if v <= 0:
                 continue
             attrs = {"ocr_symbol_misread": cur} if lookalike else {}
-            add(Ent("AMOUNT", m[0].strip(), f"{v:.2f}", round((0.75 if lookalike else 0.95) * lc, 3), loc, ctx, attrs=attrs))
+            conf = 0.75 if lookalike else 0.95
+            review = amount_review(m["num"], m["tail"], line[m.end():m.end() + 1], method)
+            if review:
+                attrs["needs_review"] = review
+                conf = min(conf, 0.5)
+            add(Ent("AMOUNT", m[0].strip(), f"{v:.2f}", round(conf * lc, 3), loc, ctx, attrs=attrs))
         for m in RE_AMOUNT_WORD.finditer(line):
             v = _num(m["num"])
             if v > 0:
                 add(Ent("AMOUNT", m[0].strip(), f"{v:.2f}", round(0.9 * lc, 3), loc, ctx))
         if method in ("OCR",) and RE_BARE_AMOUNT.match(line) and not any(e.type == "AMOUNT" and e.locator == loc for e in ents):
-            v = _num(RE_BARE_AMOUNT.match(line)["num"])
-            add(Ent("AMOUNT", line, f"{v:.2f}", round(0.55 * lc, 3), loc, ctx, attrs={"no_currency_marker": True}))
+            num = RE_BARE_AMOUNT.match(line)["num"]
+            v = _num(num)
+            why = ("No currency symbol was read — the first digit may be a misread ₹ sign" if num[0] in "4271"
+                   else "No currency symbol was read next to this number")
+            add(Ent("AMOUNT", line, f"{v:.2f}", round(0.45 * lc, 3), loc, ctx, attrs={"no_currency_marker": True, "needs_review": why}))
 
         # --- references ---
         ref_vals = set()
@@ -216,8 +239,11 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         urls = [u.rstrip(".,;)") for u in RE_URL.findall(line)]
         for u in urls:
             add(Ent("URL", u, u.lower(), round(0.95 * lc, 3), loc, ctx))
+        emails = {m[0].lower() for m in RE_EMAIL.finditer(line)}
+        for em in emails:
+            add(Ent("EMAIL", em, em, round(0.9 * lc, 3), loc, ctx))
         for m in RE_UPI.finditer(line):
-            if not any(m[0] in u for u in urls):
+            if not any(m[0] in u for u in urls) and not any(em.startswith(m[0].lower() + ".") for em in emails):
                 add(Ent("UPI_ID", m[0], m[0].lower(), round(0.93 * lc, 3), loc, ctx))
         for m in RE_PHONE.finditer(line):
             n = m[1] + m[2]
@@ -253,10 +279,31 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         for name, rx in CHANNELS:
             if re.search(rx, low):
                 add(Ent("CHANNEL", name, name, round(0.85 * lc, 3), loc, ctx))
-        for name, rx in LANGUAGE.items():
-            m = re.search(rx, low)
-            if m:
-                add(Ent("LANGUAGE_SIGNAL", name, name, round(0.75 * lc, 3), loc, ctx, attrs={"matched": m[0]}))
+        for code, matched in lexicon.find(line):
+            add(Ent("LANGUAGE_SIGNAL", lexicon.LABEL[code], code, round(0.75 * lc, 3), loc, ctx, attrs={"matched": matched}))
+
+    # Labels and values are often split over two lines by OCR ("UPI Ref No" / "427613847291"): match across pairs.
+    for i in range(len(lines) - 1):
+        a, b = lines[i].strip(), lines[i + 1].strip()
+        if not a or not b:
+            continue
+        joined = f"{a} {b}"
+        lc = base_conf * min((line_conf[i] if line_conf and i < len(line_conf) else 1.0),
+                             (line_conf[i + 1] if line_conf and i + 1 < len(line_conf) else 1.0))
+        loc = f"{locator_prefix}s {i + 1}-{i + 2}"
+        for m in REF_LABEL.finditer(joined):
+            if m.start("val") < len(a) + 1 or not any(c.isdigit() for c in m["val"]):
+                continue  # only references whose label is on line a and value on line b
+            label, val = m["label"].lower(), m["val"].upper()
+            if any(e.type in ("UTR", "UPI_REF", "TXN_ID") and e.normalized == val and not e.attrs.get("unlabelled_12_digit") for e in ents):
+                continue
+            etype = "UTR" if ("utr" in label or "rrn" in label) else "TXN_ID" if ("transaction" in label or "txn" in label or "order" in label) else "UPI_REF"
+            ents[:] = [e for e in ents if not (e.normalized == val and e.attrs.get("unlabelled_12_digit"))]
+            add(Ent(etype, f"{m['label'].strip()}: {m['val']}", val, round(0.93 * lc, 3), loc, joined[:300], attrs={"label": m["label"].strip()}))
+        have = {e.normalized for e in ents if e.type == "LANGUAGE_SIGNAL" and e.locator in (f"{locator_prefix} {i + 1}", f"{locator_prefix} {i + 2}")}
+        for code, matched in lexicon.find(joined):
+            if code not in have:
+                add(Ent("LANGUAGE_SIGNAL", lexicon.LABEL[code], code, round(0.7 * lc, 3), loc, joined[:300], attrs={"matched": matched}))
 
     # A time with no date on its line takes the document's date only if the document states exactly one date.
     distinct = {d for d, _ in all_dates}

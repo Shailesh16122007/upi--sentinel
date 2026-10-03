@@ -19,24 +19,30 @@ from app.services.ingest import _next_seq, _step
 def _ref(db: Session, synthetic: bool) -> str:
     year = datetime.now(timezone.utc).year
     prefix = f"{'DEMO' if synthetic else 'UPI'}-{year}-"
-    n = db.scalar(select(func.count()).select_from(Case).where(Case.ref.like(f"{prefix}%"))) or 0
-    return f"{prefix}{n + 1:03d}"
+    refs = db.scalars(select(Case.ref).where(Case.ref.like(f"{prefix}%"))).all()
+    n = max([int(r.rsplit("-", 1)[1]) for r in refs if r.rsplit("-", 1)[1].isdigit()] or [0])
+    return f"{prefix}{n + 1:04d}"
 
 
 def create(db: Session, statement: str, approx_date: date | None, claimed_amount: float | None, actor: str,
-           synthetic: bool = False) -> Case:
+           synthetic: bool = False, owner=None, bank_org: str | None = None, status: str = "DRAFT") -> Case:
+    now = datetime.now(timezone.utc)
     case = Case(ref=_ref(db, synthetic), statement=statement.strip(), approx_date=approx_date, claimed_amount=claimed_amount,
-                status="OPEN", is_synthetic=synthetic, claim_type=claim_type(claim_profile(statement)))
+                status=status, is_synthetic=synthetic, claim_type=claim_type(claim_profile(statement)),
+                owner_id=owner.id if owner else None, bank_org=bank_org, created_at=now, last_activity_at=now,
+                submitted_at=now if status != "DRAFT" else None)
     db.add(case)
     db.flush()
-    audit(db, "CASE_CREATED", actor, case_id=case.id, result=case.ref + (" (synthetic)" if synthetic else ""))
+    audit(db, "CASE_CREATED", actor, case_id=case.id, result=case.ref + (" (synthetic)" if synthetic else ""),
+          actor_id=owner.id if owner else None, actor_role=owner.role if owner else None)
     db.commit()
     return case
 
 
 def create_from_risk_transaction(db: Session, txn: Transaction, statement: str, actor: str) -> Case:
     """Bridge from the real-time risk API: the platform's own record of the payment becomes evidence E1."""
-    case = create(db, statement, txn.created_at.date(), txn.amount, actor)
+    from app.services.accounts import DEFAULT_BANK
+    case = create(db, statement, txn.created_at.date(), txn.amount, actor, bank_org=DEFAULT_BANK, status="SUBMITTED")
     case.linked_risk_txn_id = txn.id
     rec = {
         "record_type": "UPI_SENTINEL_RISK_RECORD", "transaction_ref": txn.ref, "amount": txn.amount,
@@ -60,6 +66,9 @@ def create_from_risk_transaction(db: Session, txn: Transaction, statement: str, 
     for n in ("File received", "File type detected", "Content extracted", "Entities identified", "Transaction information found"):
         _step(ev, n, "done", "Platform record of the risk check" if n == "Content extracted" else None)
     db.add(ev)
+    db.flush()
+    from app.services.integrity import record_hash
+    record_hash(db, ev)
     t = txn.created_at if txn.created_at.tzinfo else txn.created_at.replace(tzinfo=timezone.utc)
     common = {"case_id": case.id, "evidence_id": eid, "confidence": 1.0, "method": "SYSTEM", "locator": "record"}
     db.add_all([
