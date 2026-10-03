@@ -24,7 +24,7 @@ RE_AMOUNT_WORD = re.compile(r"(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\
 RE_EMAIL = re.compile(r"\b[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*\.[a-z]{2,24}\b", re.I)
 # Indian (1,23,45,678) or international (1,234,567) digit grouping; anything else is a likely OCR slip
 RE_GROUPING_OK = re.compile(r"^(?:\d{1,2}(?:,\d{2})*,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$")
-RE_BARE_AMOUNT = re.compile(r"^\s*(?P<sym>[^\w\s]{1,2}\s?)?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)\s*$")  # "25,000" alone on a line
+RE_BARE_AMOUNT = re.compile(r"^\s*(?P<sym>[^\w\s]{1,2}\s?|[A-Za-z]\s)?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)\s*$")  # "25,000" alone on a line
 
 RE_DATE_DMY_TEXT = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-/.,]*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s\-/.,']*(\d{4}|\d{2})\b", re.I)
 RE_DATE_MDY_TEXT = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b", re.I)

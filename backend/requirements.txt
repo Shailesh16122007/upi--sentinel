@@ -10,6 +10,7 @@ scikit-learn>=1.4
 networkx>=3.2
 reportlab>=4.1
 pillow>=10.3
+pillow-heif>=0.16        # iPhone photos (HEIC); optional
 pytesseract>=0.3.10         # needs the Tesseract binary (see README)
 pypdf>=4.2
 pypdfium2>=4.30

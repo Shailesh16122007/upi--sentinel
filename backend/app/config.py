@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
+    # Full path to tesseract(.exe) if it is not on PATH or in a standard install folder
+    tesseract_cmd: str | None = None
     # "auto" = English plus any installed Indian-language models (hin, tam, ben, tel, kan, mal, guj, pan, mar)
     ocr_lang: str = "auto"
     # Minimum customer history rows before Isolation Forest is run.

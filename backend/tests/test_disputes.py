@@ -83,7 +83,7 @@ def test_audio_unavailable_degrades_gracefully(client, auth):
     upload(client, V, cid, "scam_call.wav", "upi_screenshot_847291.png")
     evs = evidence(client, V, cid)
     a = evs["scam_call.wav"]
-    assert a["status"] == "UNAVAILABLE" and a["error"].startswith("We could not transcribe this recording")
+    assert a["status"] == "UNAVAILABLE" and a["error"].startswith("Speech-to-text is not set up")  # a setup issue, not the file
     assert a["entities"] == [] and a["text"] is None  # nothing invented
     assert evs["upi_screenshot_847291.png"]["status"] == "PROCESSED"  # partial success
     miss = client.get(f"{API}/cases/{cid}", headers=V).json()["analysis"]["victim"]["missing"]

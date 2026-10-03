@@ -133,7 +133,7 @@ function RequestCard({ r }: { r: EvRequest }) {
 /* ------------------------------------------------------------------ upload */
 
 const OPTIONS = [
-  { key: 'image', title: 'Screenshots', body: 'UPI payment screenshots, SMS, chats, bank messages.', accept: 'image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff' },
+  { key: 'image', title: 'Screenshots', body: 'UPI payment screenshots, SMS, chats, bank messages.', accept: 'image/*,.png,.jpg,.jpeg,.jfif,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif' },
   { key: 'message', title: 'Messages', body: 'Paste a message or upload a text file.', accept: '.txt' },
   { key: 'audio', title: 'Audio', body: 'Upload a call recording or voice message.', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.opus,.amr' },
   { key: 'document', title: 'Documents', body: 'Upload bank statements, complaint letters or PDFs.', accept: '.pdf,.docx,.txt,.eml' },
@@ -149,6 +149,7 @@ function Uploader({ c, first }: { c: CaseFull; first: boolean }) {
   const [whenHint, setWhenHint] = useState('')
   const [last, setLast] = useState<Upload | null>(null)
   const refresh = () => { qc.invalidateQueries({ queryKey: ['evidence', c.id] }); qc.invalidateQueries({ queryKey: ['victim-view', c.id] }) }
+  const { data: cap } = useQuery({ queryKey: ['cap'], queryFn: api.capabilities, staleTime: 60_000 })
   const up = useMutation({
     mutationFn: ({ files, channel }: { files: File[]; channel?: string }) => api.upload(c.id, files, { channel, occurred_at: whenHint || undefined }),
     onSuccess: r => { setLast(r); refresh() },
@@ -167,6 +168,12 @@ function Uploader({ c, first }: { c: CaseFull; first: boolean }) {
         <h2 className="text-[16px] font-semibold">{first ? 'Upload your proof' : 'Add more evidence'}</h2>
         <p className="mt-0.5 text-[13px] text-muted">You can upload anything that helps explain what happened. You can also drag files here.</p>
       </div>
+      {cap && !cap.ocr.available && (
+        <div role="alert" className="border-b border-missing/30 bg-missing-tint px-4 py-2.5 text-[13px] text-missing">
+          <span className="font-semibold">Text reading (OCR) is not installed on this computer.</span> Images will be saved but not read
+          until Tesseract OCR is installed (see the README). This is a setup problem, not a problem with your images.
+        </div>
+      )}
       <div className="grid gap-px bg-rule-2 sm:grid-cols-2">
         {OPTIONS.map(o => (
           <div key={o.key} className="flex flex-col bg-surface p-4">
@@ -242,6 +249,8 @@ const STEP_TEXT = (e: Evidence, name: string, status: string) => {
 
 function Processing({ caseId, evidence, analyzing }: { caseId: string; evidence: Evidence[]; analyzing: boolean }) {
   const { open } = useSources()
+  const qc = useQueryClient()
+  const retry = useMutation({ mutationFn: () => api.reprocess(caseId), onSuccess: () => qc.invalidateQueries() })
   const ok = evidence.filter(e => e.status === 'PROCESSED' || e.status === 'PARTIAL').length
   const bad = evidence.filter(e => e.status === 'FAILED' || e.status === 'UNAVAILABLE').length
   return (
@@ -268,6 +277,10 @@ function Processing({ caseId, evidence, analyzing }: { caseId: string; evidence:
                 ))}
                 {busy && <li className="flex items-center gap-2 text-muted"><span className="working h-2 w-2 rounded-full bg-accent" />Reading this file…</li>}
               </ul>
+              {(e.status === 'UNAVAILABLE' || e.status === 'FAILED') && (
+                <button className="ml-5 mt-1 text-[13px] text-accent underline disabled:opacity-50" disabled={retry.isPending}
+                  onClick={() => retry.mutate()}>{retry.isPending ? 'Reading again…' : 'Try reading again'}</button>
+              )}
               {(e.kind === 'AUDIO' || e.kind === 'VIDEO') && (e.status === 'UNAVAILABLE' || e.status === 'FAILED') && <TranscriptForm caseId={caseId} ev={e} />}
             </li>
           )

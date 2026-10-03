@@ -90,3 +90,56 @@ def test_corrupted_and_noisy_files_partial_success(client, auth, fx):
     assert evs["noisy_call.wav"]["status"] in ("UNAVAILABLE", "FAILED") and evs["noisy_call.wav"]["entities"] == []
     assert evs["photo_of_screen.jpg"]["status"] == "PROCESSED"
     assert client.get(f"{API}/cases/{cid}", headers=V).json()["disputed"]["amount"] == 3250
+
+
+def _card(rotate=0, size=None, fg="#111", bg="white"):
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+    from tests.unknown.make_fixtures import DJ, DJB
+    img = Image.new("RGB", (720, 700), bg)
+    d = ImageDraw.Draw(img)
+    for i, (t, s, b) in enumerate([("Payment Successful", 34, True), ("₹ 18,500", 60, True), ("sharmaelec@oksbi", 28, False),
+                                   ("UPI Ref No: 427688812345", 26, False)]):
+        d.text((50, 80 + i * 120), t, font=ImageFont.truetype(DJB if b else DJ, s), fill=fg)
+    if rotate:
+        img = img.rotate(rotate, expand=True)
+    if size:
+        img = img.resize(size)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_ocr_reads_rotated_and_flags_tiny_images():
+    from app.services.extraction.entities import extract
+    from app.services.ocr.engine import ocr_image
+    r = ocr_image(_card(rotate=90))
+    assert r.ok and "427688812345" in r.text and "sharmaelec@oksbi" in r.text
+    tiny = ocr_image(_card(size=(200, 195)))
+    assert not tiny.ok or tiny.quality <= 0.5  # thumbnail: never trusted at full confidence
+    noise = ocr_image(_noise_png())
+    assert not noise.ok and "text" in noise.error.lower()
+    assert any(x.normalized == "18500.00" for x in extract("X 18,500", method="OCR") if x.type == "AMOUNT")
+
+
+def _noise_png():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.effect_noise((400, 300), 40).convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_missing_ocr_is_reported_as_setup_problem(client, auth, monkeypatch):
+    from app.services.ocr import engine
+    monkeypatch.setattr(engine, "available", lambda: False)
+    V = auth["victim"]
+    cid = new_case(client, V)
+    client.post(f"{API}/cases/{cid}/evidence", files=[("files", ("shot.png", _card()))], headers=V)
+    ev = client.get(f"{API}/cases/{cid}/evidence", headers=V).json()[0]
+    assert ev["status"] == "UNAVAILABLE" and ev["error"].startswith("Text reading (OCR) is not set up")
+    assert client.get(f"{API}/system/capabilities", headers=V).json()["ocr"]["available"] is False
+    monkeypatch.undo()  # OCR installed again → "Try reading again" reads the saved original
+    assert client.post(f"{API}/cases/{cid}/process", headers=V).status_code == 202
+    ev = client.get(f"{API}/cases/{cid}/evidence", headers=V).json()[0]
+    assert ev["status"] == "PROCESSED" and "427688812345" in ev["text"]

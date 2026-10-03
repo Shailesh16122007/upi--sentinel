@@ -33,14 +33,14 @@ from app.services.ocr import engine as ocr
 log = logging.getLogger("sentinel.ingest")
 
 KINDS = {
-    "png": "IMAGE", "jpg": "IMAGE", "jpeg": "IMAGE", "webp": "IMAGE", "gif": "IMAGE", "bmp": "IMAGE", "tif": "IMAGE",
-    "tiff": "IMAGE",
+    "png": "IMAGE", "jpg": "IMAGE", "jpeg": "IMAGE", "jfif": "IMAGE", "webp": "IMAGE", "gif": "IMAGE", "bmp": "IMAGE",
+    "tif": "IMAGE", "tiff": "IMAGE", "heic": "IMAGE", "heif": "IMAGE",
     "mp3": "AUDIO", "wav": "AUDIO", "m4a": "AUDIO", "aac": "AUDIO", "ogg": "AUDIO", "opus": "AUDIO", "amr": "AUDIO",
     "mp4": "VIDEO", "mov": "VIDEO", "webm": "VIDEO", "3gp": "VIDEO",
     "pdf": "DOCUMENT", "docx": "DOCUMENT", "txt": "DOCUMENT", "eml": "DOCUMENT",
     "csv": "STRUCTURED", "json": "STRUCTURED",
 }
-MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
+MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "jfif": "image/jpeg", "heic": "image/heic", "heif": "image/heif", "webp": "image/webp", "gif": "image/gif",
         "bmp": "image/bmp", "tif": "image/tiff", "tiff": "image/tiff", "mp3": "audio/mpeg",
         "wav": "audio/wav", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg", "opus": "audio/ogg",
         "amr": "audio/amr", "mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "3gp": "video/3gpp",
@@ -58,6 +58,16 @@ FRIENDLY = {
 }
 
 
+# When a capability is missing on the server, the problem is the setup — not the person's file.
+SETUP = {
+    "IMAGE": "Text reading (OCR) is not set up on this computer yet. Your image is saved and will be read automatically "
+             "once it is installed — use “Try reading again”.",
+    "AUDIO": "Speech-to-text is not set up on this computer yet. Your recording is saved and can be read once it is "
+             "installed — or type what was said.",
+    "VIDEO": "Speech-to-text is not set up on this computer yet. Your recording is saved.",
+}
+
+
 class Rejected(Exception):
     pass
 
@@ -72,7 +82,8 @@ def _magic_ok(ext: str, d: bytes) -> bool:
     h = d[:16]
     return {
         "png": h.startswith(b"\x89PNG\r\n\x1a\n"),
-        "jpg": h.startswith(b"\xff\xd8\xff"), "jpeg": h.startswith(b"\xff\xd8\xff"),
+        "jpg": h.startswith(b"\xff\xd8\xff"), "jpeg": h.startswith(b"\xff\xd8\xff"), "jfif": h.startswith(b"\xff\xd8\xff"),
+        "heic": d[4:8] == b"ftyp", "heif": d[4:8] == b"ftyp",
         "webp": h[:4] == b"RIFF" and d[8:12] == b"WEBP",
         "pdf": h.startswith(b"%PDF-"),
         "docx": h.startswith(b"PK\x03\x04"),
@@ -99,7 +110,7 @@ def validate(filename: str, data: bytes) -> str:
     s = get_settings()
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in KINDS:
-        raise Rejected(f"We can't read '.{ext or '?'}' files yet. You can upload screenshots/photos (PNG, JPG, WEBP, GIF), "
+        raise Rejected(f"We can't read '.{ext or '?'}' files yet. You can upload screenshots/photos (PNG, JPG, WEBP, GIF, HEIC), "
                        "audio (MP3, WAV, M4A, AAC, OGG, OPUS), screen recordings (MP4, MOV, WEBM), documents (PDF, DOCX, TXT, "
                        "EML email), or bank exports (CSV, JSON).")
     if not data:
@@ -248,7 +259,8 @@ def process(db: Session, ev: EvidenceFile, actor: str = "system") -> None:
 
 
 def _fail(ev: EvidenceFile, technical: str | None, status: str = "FAILED") -> None:
-    ev.status, ev.error = status, FRIENDLY.get(ev.kind, "This file could not be read automatically.")
+    msg = SETUP.get(ev.kind) if status == "UNAVAILABLE" else None
+    ev.status, ev.error = status, msg or FRIENDLY.get(ev.kind, "This file could not be read automatically.")
     _step(ev, "Content extracted", "failed", technical or ev.error)
 
 

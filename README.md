@@ -52,6 +52,24 @@ npm run dev                                              # open http://127.0.0.1
 Tables are created and upgraded automatically at startup (additive migration — a V1 database keeps its cases).
 Without PostgreSQL, remove `SENTINEL_DATABASE_URL` from `.env` to fall back to a local SQLite file.
 
+### Check your setup
+
+```bash
+cd backend && python -m app.tools.check_setup
+```
+Shows whether Tesseract OCR is found (and where), which languages it has, reads a sample screenshot, and whether
+speech-to-text is ready. If Tesseract is installed somewhere unusual, add `SENTINEL_TESSERACT_CMD=C:\path\to\tesseract.exe`
+to `backend/.env`.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Every image says “Text reading (OCR) is not set up…” (older versions: “We could not read this image”) | Tesseract is not installed or not found. Install it (table above), run `check_setup`, restart the backend, then press **Try reading again** on the case. |
+| Recordings say “Speech-to-text is not set up…” | Run `python -m app.tools.fetch_models` once with internet. The recording is kept either way. |
+| `error while attempting to bind on address ('127.0.0.1', 8000)` | Port 8000 is taken. Start with `--port 8001` and create `frontend/.env.local` with `VITE_API_TARGET=http://127.0.0.1:8001`. |
+| Hindi / Tamil text in images not read | Install those Tesseract languages (`tesseract-ocr-hin`, `-tam`, or tick them in the Windows installer). |
+
 ### Sign in
 
 The login page lists the **demo accounts** (development / demo deployments only, `SENTINEL_SHOW_DEMO_ACCOUNTS`):
@@ -82,7 +100,7 @@ See [DEMO.md](DEMO.md) for the full three-role script and the synthetic “relat
 ## Tests
 
 ```bash
-cd backend && pytest                    # 53 tests: extraction, unknown-file robustness, lifecycle, permissions,
+cd backend && pytest                    # 55 tests: extraction, unknown-file robustness, lifecycle, permissions,
                                         # related cases, reports, export, V1→V2 migration, risk API
 SENTINEL_TEST_DATABASE_URL=postgresql+psycopg://sentinel:sentinel@127.0.0.1:5432/sentinel_test pytest   # same suite on PostgreSQL
 cd frontend && npx tsc -b && npm run lint && npm run build
@@ -143,7 +161,10 @@ real cases in related-case or cluster calculations.
   structured export is for manual entry. There is no integration with NCRP/CFCFRMS or any bank.
 - **Short references** (e.g. 6-digit) are used for matching within a case but not for cross-case links (too ambiguous).
 - Processing runs in-process (FastAPI background tasks, resumed after a restart). For many concurrent users, move it to a worker queue.
-- HEIC photos and legacy `.doc` are not supported; video frames are sampled for OCR (8 frames), not fully analysed.
+- Images are read several ways (contrast, binarised, photo clean-up, faint text; rotation corrected) and the best reading is kept.
+  Thumbnail-sized images and partly readable text are kept but every value from them is marked *needs review*. Handwriting
+  and pictures without text cannot be read. HEIC needs `pillow-heif` (in requirements). Legacy `.doc` is not supported;
+  video frames are sampled for OCR (8 frames), not fully analysed.
 - Accounts are seeded demo accounts; there is no self-registration or admin UI for creating staff accounts yet.
 
 ## Documentation
