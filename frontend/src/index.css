@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-paper: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-ink: #13233f;
+  --color-ink-2: #2c3b55;
+  --color-muted: #5a6578;
+  --color-faint: #8a93a3;
+  --color-rule: #dfe3ea;
+  --color-rule-2: #eceff3;
+  --color-tint: #f1f4f8;
+
+  --color-accent: #1f5fad;
+  --color-accent-ink: #174a88;
+  --color-accent-tint: #eaf1fa;
+
+  --color-support: #1f5fad;
+  --color-contra: #b42318;
+  --color-contra-tint: #fdf0ef;
+  --color-context: #5a6578;
+  --color-missing: #8a5a00;
+  --color-missing-tint: #fbf4e6;
+  --color-ok: #067647;
+  --color-ok-tint: #ecf7f1;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* number-heavy cells read better with tabular figures */
+.tabular { font-variant-numeric: tabular-nums; }
+
+@keyframes slide-in { from { transform: translateX(16px); opacity: 0 } to { transform: none; opacity: 1 } }
+.panel-enter { animation: slide-in 160ms ease-out; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+.working { animation: pulse-dot 1.2s ease-in-out infinite; }
+
+.react-flow__attribution { display: none; }

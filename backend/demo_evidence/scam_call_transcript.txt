@@ -1,0 +1,7 @@
+[00:00] Hello, am I speaking with Ananya madam?
+[00:04] Madam, I am calling from your bank KYC department.
+[00:10] Your account will be blocked today because your KYC is pending.
+[00:17] To keep the account active, a verification request will come on your UPI app.
+[00:24] Please approve the request and enter your PIN immediately.
+[00:33] Okay, I have entered the PIN. Is it done now?
+[00:38] Yes madam, verification is complete. Do not share this call with anyone.

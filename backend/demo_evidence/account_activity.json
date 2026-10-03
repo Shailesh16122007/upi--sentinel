@@ -1,0 +1,42 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-09-29T09:12:00+05:30",
+      "event": "LOGIN",
+      "device_id": "Pixel 7 (customer)",
+      "ip": "49.37.120.15"
+    },
+    {
+      "timestamp": "2026-09-30T19:45:00+05:30",
+      "event": "LOGIN",
+      "device_id": "Pixel 7 (customer)",
+      "ip": "49.37.120.15"
+    },
+    {
+      "timestamp": "2026-10-01T22:26:40+05:30",
+      "event": "LOGIN",
+      "device_id": "Redmi Note 12",
+      "ip": "103.88.12.7"
+    },
+    {
+      "timestamp": "2026-10-01T22:27:10+05:30",
+      "event": "DEVICE_REGISTERED",
+      "device_id": "Redmi Note 12",
+      "ip": "103.88.12.7",
+      "detail": "UPI device binding completed"
+    },
+    {
+      "timestamp": "2026-10-01T22:30:05+05:30",
+      "event": "BENEFICIARY_ADDED",
+      "device_id": "Redmi Note 12",
+      "detail": "rahultraders@ybl"
+    },
+    {
+      "timestamp": "2026-10-01T22:32:18+05:30",
+      "event": "UPI PIN verified (AUTH_SUCCESS)",
+      "device_id": "Redmi Note 12",
+      "ip": "103.88.12.7",
+      "reference": "427613847291"
+    }
+  ]
+}

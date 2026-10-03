@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/sentinel.db*
+backend/storage/
+backend/.env
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+.env
