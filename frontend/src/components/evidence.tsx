@@ -76,8 +76,8 @@ const STATUS: Record<Evidence['status'], { tone: 'ok' | 'warn' | 'bad' | 'neutra
   RECEIVED: { tone: 'neutral', label: 'Queued' },
   PROCESSING: { tone: 'accent', label: 'Processing' },
   PROCESSED: { tone: 'ok', label: 'Processed' },
-  PARTIAL: { tone: 'warn', label: 'Low-confidence text' },
-  UNAVAILABLE: { tone: 'warn', label: 'Unavailable' },
+  PARTIAL: { tone: 'warn', label: 'Read — check values' },
+  UNAVAILABLE: { tone: 'warn', label: 'Needs attention' },
   FAILED: { tone: 'bad', label: 'Could not read' },
 }
 export const EvidenceStatus = ({ status }: { status: Evidence['status'] }) =>
@@ -85,10 +85,10 @@ export const EvidenceStatus = ({ status }: { status: Evidence['status'] }) =>
 
 export function outcomeLine(e: Evidence): string {
   if (e.status === 'RECEIVED' || e.status === 'PROCESSING') return 'Processing…'
-  if (e.status === 'FAILED' || e.status === 'UNAVAILABLE') return e.kind === 'AUDIO' ? 'Audio transcription unavailable' : e.error ?? 'Could not be read'
+  if (e.status === 'FAILED' || e.status === 'UNAVAILABLE') return e.error ?? 'Could not be read'
   const parts: string[] = [kindLabel(e)]
   if (e.kind === 'IMAGE') parts.push('OCR complete')
-  else if (e.kind === 'AUDIO') parts.push(e.method === 'PROVIDED_TRANSCRIPT' ? 'Transcript provided' : 'Transcript complete')
+  else if (e.kind === 'AUDIO' || e.kind === 'VIDEO') parts.push(e.method === 'PROVIDED_TRANSCRIPT' ? 'Transcript provided' : e.method === 'VIDEO_OCR' ? 'Text read from video' : 'Transcript complete')
   else if (e.pages) parts.push(`${e.pages} page${e.pages > 1 ? 's' : ''} processed`)
   else if (e.kind === 'STRUCTURED') parts.push(`${e.entities.filter(x => x.type === 'HISTORY_TXN' || x.type === 'ACCOUNT_EVENT').length} records read`)
   else parts.push('Text extracted')
@@ -134,10 +134,10 @@ function useBlob(path: string | null) {
 }
 
 const ENTITY_ORDER = ['AMOUNT', 'DATETIME', 'DATE', 'TIME', 'UTR', 'UPI_REF', 'TXN_ID', 'UPI_ID', 'PAYEE', 'ACCOUNT', 'BANK', 'STATUS',
-  'CHANNEL', 'PHONE', 'URL', 'CLAIM', 'ACCOUNT_EVENT', 'HISTORY_TXN', 'DEVICE', 'IP', 'LANGUAGE_SIGNAL', 'APP']
+  'CHANNEL', 'PHONE', 'EMAIL', 'URL', 'CLAIM', 'ACCOUNT_EVENT', 'HISTORY_TXN', 'DEVICE', 'IP', 'LANGUAGE_SIGNAL', 'APP']
 
 function SourcePanel({ caseId, ev, target, onClose }: { caseId: string; ev: Evidence; target: Target; onClose: () => void }) {
-  const needsFile = ev.kind === 'IMAGE' || ev.kind === 'AUDIO' || ev.mime === 'application/pdf'
+  const needsFile = ev.kind === 'IMAGE' || ev.kind === 'AUDIO' || ev.kind === 'VIDEO' || ev.mime === 'application/pdf'
   const { url, err } = useBlob(needsFile ? api.fileUrl(caseId, ev.id) : null)
   const focus = target.entityId ? ev.entities.find(x => x.id === target.entityId) : undefined
   const locator = focus?.locator ?? target.locator
@@ -186,12 +186,17 @@ function SourcePanel({ caseId, ev, target, onClose }: { caseId: string; ev: Evid
           <a href={url} target="_blank" rel="noreferrer" className="text-[13px] text-accent underline">Open original PDF</a>
         )}
 
-        {ev.kind === 'AUDIO' && (
+        {(ev.kind === 'AUDIO' || ev.kind === 'VIDEO') && (
           <section>
-            <h4 className="mb-2 text-[12.5px] font-semibold text-muted">Recording{ev.duration_s ? ` · ${mmss(ev.duration_s)}` : ''}</h4>
-            {url ? <audio controls src={url} className="w-full" /> : <p className="text-[12.5px] text-muted">{err ?? 'Loading…'}</p>}
+            <h4 className="mb-2 text-[12.5px] font-semibold text-muted">Original recording{ev.duration_s ? ` · ${mmss(ev.duration_s)}` : ''}</h4>
+            {url ? (ev.kind === 'VIDEO' ? <video controls src={url} className="max-h-[320px] w-full rounded-[var(--radius-sm)] border border-rule" />
+              : <audio controls src={url} className="w-full" />) : <p className="text-[12.5px] text-muted">{err ?? 'Loading…'}</p>}
             <Transcript ev={ev} locator={locator} />
           </section>
+        )}
+        {ev.language && ev.language.label !== 'Not enough text' && (
+          <p className="text-[12.5px]"><span className="text-muted">Detected language:</span> <span className="font-medium">{ev.language.label}</span>
+            <span className="text-faint"> · {ev.language.confidence} confidence · {ev.language.basis}</span></p>
         )}
 
         {ev.text && ev.kind !== 'AUDIO' && (
@@ -208,14 +213,33 @@ function SourcePanel({ caseId, ev, target, onClose }: { caseId: string; ev: Evid
           {ents.length ? <EntityTable ents={ents} focusId={focus?.id} /> : <p className="text-[12.5px] text-muted">Nothing was extracted from this item.</p>}
         </section>
 
+        {ev.image_check && (
+          <section>
+            <h4 className="mb-2 text-[12.5px] font-semibold text-muted">Image checks</h4>
+            <p className={cn('text-[13px] font-medium', ev.image_check.indicators.length ? 'text-missing' : 'text-ink')}>{ev.image_check.label}</p>
+            {ev.image_check.indicators.map(i => <p key={i.code} className="mt-1 text-[12.5px]"><span className="font-medium">{i.label}.</span> <span className="text-muted">{i.detail}</span></p>)}
+            <p className="mt-1 text-[12px] text-faint">Checked: {ev.image_check.checks.join('; ')}. {ev.image_check.note}</p>
+          </section>
+        )}
+
+        <section>
+          <h4 className="mb-2 text-[12.5px] font-semibold text-muted">Evidence integrity</h4>
+          <dl className="grid grid-cols-[110px_1fr] gap-y-1 text-[12px]">
+            <dt className="text-muted">SHA-256</dt><dd className="break-all font-mono text-[11px]">{ev.sha256}</dd>
+            <dt className="text-muted">Uploaded</dt><dd>{dateTime(ev.uploaded_at)}{ev.uploaded_by_role ? ` · by ${humanize(ev.uploaded_by_role === 'VICTIM' ? 'customer' : ev.uploaded_by_role)}` : ''}</dd>
+            <dt className="text-muted">Original file</dt><dd>{ev.original_name} · {ev.mime} · {bytes(ev.size_bytes)}</dd>
+            <dt className="text-muted">Status</dt>
+            <dd className={cn(ev.integrity.result === 'MATCH' ? 'text-ok' : ev.integrity.result === 'NOT_VERIFIED' ? 'text-muted' : 'text-contra')}>
+              {ev.integrity.status}{ev.integrity.last_verified_at && <span className="text-muted"> · last verified {dateTime(ev.integrity.last_verified_at)}</span>}
+            </dd>
+            {ev.user_time_hint && <><dt className="text-muted">Time given</dt><dd>{dateTime(ev.user_time_hint)} (by user)</dd></>}
+          </dl>
+          <p className="mt-1.5 text-[11.5px] text-faint">{ev.integrity.meaning}</p>
+        </section>
+
         <section>
           <h4 className="mb-2 text-[12.5px] font-semibold text-muted">Processing</h4>
           <StepList steps={ev.steps} done />
-          <dl className="mt-3 grid grid-cols-[110px_1fr] gap-y-1 text-[12px]">
-            <dt className="text-muted">Received</dt><dd>{dateTime(ev.uploaded_at)}</dd>
-            {ev.user_time_hint && <><dt className="text-muted">Time given</dt><dd>{dateTime(ev.user_time_hint)} (by user)</dd></>}
-            <dt className="text-muted">SHA-256</dt><dd className="break-all font-mono text-[11px]">{ev.sha256}</dd>
-          </dl>
         </section>
       </div>
     </aside>
@@ -251,8 +275,8 @@ function Transcript({ ev, locator }: { ev: Evidence; locator?: string | null }) 
   return (
     <div className="mt-3">
       <p className="mb-1.5 text-[12px] text-muted">
-        {provided ? 'Transcript provided by the user — not machine-generated.' : `Machine transcript (${methodLabel(ev.method)}${primary[0]?.lang ? `, language: ${primary[0].lang}` : ''}).`}
-        {' '}Statements below are extracted from audio and are not established facts.
+        {provided ? 'Transcript provided by the user — not machine-generated.' : `Machine transcript (${methodLabel(ev.method)}${primary[0]?.lang ? `, speech language: ${primary[0].lang}` : ''}).`}
+        {' '}Statements are what someone said — not established facts. Speakers are not separated automatically.
       </p>
       <ul className="max-h-[260px] overflow-auto rounded-[var(--radius-sm)] border border-rule bg-paper p-2 text-[12.5px]">
         {primary.map((s, i) => {
@@ -265,7 +289,7 @@ function Transcript({ ev, locator }: { ev: Evidence; locator?: string | null }) 
         })}
       </ul>
       {translated.length > 0 && (
-        <details className="mt-2 text-[12.5px]"><summary className="cursor-pointer text-muted">English translation (Whisper)</summary>
+        <details className="mt-2 text-[12.5px]"><summary className="cursor-pointer text-muted">English translation (machine, for reference — the original above is the evidence)</summary>
           <ul className="mt-1 space-y-0.5">{translated.map((s, i) => <li key={i}><span className="font-mono text-[11px] text-faint">{mmss(s.start)}</span> {s.text}</li>)}</ul>
         </details>
       )}
@@ -290,6 +314,8 @@ function EntityTable({ ents, focusId }: { ents: Entity[]; focusId?: string }) {
                   : <span className={cn(['UTR', 'UPI_REF', 'TXN_ID', 'UPI_ID', 'ACCOUNT'].includes(x.type) && 'font-mono')}>{x.value}</span>}
               {x.occurred_at && x.type !== 'DATETIME' && <div className="text-muted">{dateTime(x.occurred_at)}</div>}
               {x.attrs.ocr_symbol_misread && <div className="text-missing">OCR read the ₹ sign as “{x.attrs.ocr_symbol_misread}”</div>}
+              {x.attrs.needs_review && <div className="text-missing">Needs review: {x.attrs.needs_review}</div>}
+              {x.attrs.unlabelled_12_digit && <div className="text-missing">Needs review: unlabelled 12-digit number</div>}
             </td>
             <td className="py-1 pr-2 text-muted">{x.locator ?? '—'}</td>
             <td className="tabular py-1 text-right text-muted">{Math.round(x.confidence * 100)}%</td>

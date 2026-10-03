@@ -14,9 +14,12 @@ from datetime import date, datetime, time, timedelta
 from app.services.extraction.entities import IST
 
 REF_TYPES = ("UTR", "UPI_REF", "TXN_ID")
+# Items that are proof of a payment by their nature. Anything else (an e-mail, an image of something, a letter)
+# yields a transaction only if it also shows a payment happened (a reference, or a debited / successful status).
+PAYMENT_PROOF = {"UPI_SCREENSHOT", "BANK_SMS", "BANK_SMS_SCREENSHOT", "PAYMENT_RECEIPT", "BANK_STATEMENT", "SYSTEM_RECORD"}
 FIN_SUBTYPES = {"UPI_SCREENSHOT", "BANK_SMS", "BANK_SMS_SCREENSHOT", "PAYMENT_RECEIPT", "BANK_STATEMENT", "SYSTEM_RECORD",
                 "MESSAGE", "IMAGE_OTHER", "DOCUMENT_OTHER", "COMPLAINT"}
-COMM_SUBTYPES = {"CHAT", "CHAT_SCREENSHOT", "CALL_RECORDING", "CALL_LOG"}
+COMM_SUBTYPES = {"CHAT", "CHAT_SCREENSHOT", "CALL_RECORDING", "CALL_LOG", "EMAIL"}
 
 
 @dataclass
@@ -25,6 +28,7 @@ class Mention:
     evidence_id: str
     subtype: str
     amount: tuple[float, str] | None = None  # (value, entity_id)
+    direction: str | None = None  # DEBIT | CREDIT
     refs: dict[str, str] = field(default_factory=dict)  # normalized ref -> entity id
     dt: tuple[datetime, str, str] | None = None  # (datetime, precision, entity_id)
     date_only: tuple[date, str] | None = None
@@ -40,7 +44,7 @@ class Mention:
 
 
 def _amount_entities(ents):
-    return [e for e in ents if e["type"] == "AMOUNT"]
+    return [e for e in ents if e["type"] == "AMOUNT" and not e["attrs"].get("balance")]
 
 
 def mentions_for_evidence(ev: dict, ents: list[dict]) -> list[Mention]:
@@ -56,6 +60,11 @@ def mentions_for_evidence(ev: dict, ents: list[dict]) -> list[Mention]:
         for e in ents:
             by_line[e["locator"]].append(e)
         groups = [g for g in by_line.values() if _amount_entities(g)]
+    proof = ev["subtype"] in PAYMENT_PROOF or any(
+        e["type"] in REF_TYPES and not e["attrs"].get("unlabelled_12_digit") for e in ents) or any(
+        e["type"] == "STATUS" and e["normalized"] in ("DEBITED", "SUCCESS") for e in ents)
+    if not proof:
+        return []  # mentions an amount, but nothing shows a payment was made
     out = []
     for gi, g in enumerate(groups):
         m = Mention(key=f"{ev['id']}:{gi}", evidence_id=ev["id"], subtype=ev["subtype"])
@@ -69,6 +78,7 @@ def _fill(m: Mention, ents: list[dict]) -> None:
     best_amt = max(_amount_entities(ents), key=lambda e: e["confidence"], default=None)
     if best_amt:
         m.amount = (float(best_amt["normalized"]), best_amt["id"])
+        m.direction = best_amt["attrs"].get("direction")
     for e in ents:
         t, n = e["type"], e["normalized"]
         if t in REF_TYPES and n:
@@ -188,6 +198,7 @@ class Fused:
     device: str | None = None
     confidence: float = 1.0
     time_of_day: str | None = None  # "22:32" when the evidence states a time but no date
+    direction: str | None = None    # CREDIT when every source shows money coming in
     selected: bool = False          # chosen as disputed by a person
 
     @property
@@ -350,6 +361,10 @@ def fuse(evidence: list[dict], entities: list[dict], approx: date | None, claime
         fz.confidence = min([l[2] for l in fz.links], default=1.0)
         if not fz.occurred_at:
             fz.time_of_day = _pick(fz.fields.get("time_of_day", []))
+        dirs = {m.direction for m in fz.mentions if m.direction}
+        if dirs == {"CREDIT"}:
+            fz.direction = "CREDIT"
+            fz.status = fz.status or "CREDITED"
 
     # choose the disputed transaction: a person's selection first, then the customer's stated amount,
     # then the best-supported transaction
@@ -358,7 +373,8 @@ def fuse(evidence: list[dict], entities: list[dict], approx: date | None, claime
 
     def score(fz: Fused):
         claimed_hit = 1 if (claimed and fz.amount and abs(fz.amount - claimed) < 1) else 0
-        return (fz.selected, claimed_hit, len(fz.sources), fz.amount or 0)
+        not_credit = all(m.direction != "CREDIT" for m in fz.mentions)  # money the customer received is not the loss
+        return (fz.selected, claimed_hit, not_credit, len(fz.sources), fz.amount or 0)
     if fused:
         max(fused, key=score).kind = "DISPUTED"
 

@@ -1,4 +1,4 @@
-import { Sources } from '@/components/evidence'
+import { Sources, useSources } from '@/components/evidence'
 import { Badge } from '@/components/ui'
 import { cn, humanize } from '@/lib/format'
 import type { TimelineEvent } from '@/lib/types'
@@ -18,6 +18,8 @@ function Marker({ e }: { e: TimelineEvent }) {
 }
 
 export function TimelineView({ events }: { events: TimelineEvent[] }) {
+  const { open } = useSources()
+  const show = (e: TimelineEvent) => { const s = e.sources.find(x => x.evidence_id); if (s?.evidence_id) open({ evidenceId: s.evidence_id }) }
   const dated = events.filter(e => e.occurred_at)
   const undated = events.filter(e => !e.occurred_at)
   return (
@@ -25,7 +27,8 @@ export function TimelineView({ events }: { events: TimelineEvent[] }) {
       <div>
         <ol className="relative ml-[180px] border-l border-rule">
           {dated.map(e => (
-            <li key={e.id} className={cn('relative pb-4 pl-5', e.event_type === 'TRANSACTION' && 'pb-5')}>
+            <li key={e.id} onClick={() => show(e)} title={e.sources.length ? 'Open the evidence behind this event' : undefined}
+              className={cn('relative pb-4 pl-5', e.event_type === 'TRANSACTION' && 'pb-5', e.sources.length && 'cursor-pointer hover:bg-tint/60')}>
               <span className={cn('tabular absolute -left-[180px] top-[3px] w-[166px] text-right text-[12.5px]', e.approximate ? 'text-missing' : 'text-ink-2')}>
                 {e.time_label.split(' (')[0]}
               </span>
@@ -37,6 +40,7 @@ export function TimelineView({ events }: { events: TimelineEvent[] }) {
                 {e.approximate && <Badge tone="warn">Approximate</Badge>}
               </div>
               <p className="mt-0.5 max-w-[85ch] text-[13px] text-muted">{e.description}</p>
+              {e.source_kinds.length > 0 && <p className="text-[12px] text-faint">Source: {e.source_kinds.join(', ')}</p>}
               {e.approximate && e.time_label.includes('(') && <p className="text-[12px] text-missing">{e.time_label.slice(e.time_label.indexOf('(') + 1, -1)}</p>}
             </li>
           ))}
@@ -49,6 +53,7 @@ export function TimelineView({ events }: { events: TimelineEvent[] }) {
               {undated.map(e => (
                 <li key={e.id} className="flex flex-wrap items-center gap-2 py-2 text-[13px]">
                   <span className="font-medium">{humanize(e.event_type)}</span><Sources sources={e.sources} />
+                  {e.time_label.includes('date unavailable') && <Badge tone="warn">{e.time_label}</Badge>}
                   <span className="basis-full text-muted">{e.description}</span>
                 </li>
               ))}
@@ -63,7 +68,7 @@ export function TimelineView({ events }: { events: TimelineEvent[] }) {
         ))}
         <div className="relative pl-5"><Marker e={{ reliability: 'DOCUMENTED', approximate: true, event_type: '' } as TimelineEvent} />Approximate time (amber)</div>
         <div className="relative pl-5"><Marker e={{ reliability: 'DOCUMENTED', approximate: false, event_type: 'TRANSACTION' } as TimelineEvent} />Disputed transaction</div>
-        <p className="pt-2">Times come only from the evidence itself, or from a time you entered at upload (always marked approximate).</p>
+        <p className="pt-2">Times come only from the evidence itself, or from a time the customer entered at upload (always marked approximate). Missing dates are never filled in. Click an event to open its source.</p>
       </aside>
     </div>
   )

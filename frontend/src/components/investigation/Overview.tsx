@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts'
 import { ExhibitTag, Sources, useSources } from '@/components/evidence'
-import { Badge, Panel, PanelHead } from '@/components/ui'
+import { Badge, FieldStateBadge, Panel, PanelHead } from '@/components/ui'
 import { api } from '@/lib/api'
 import { cn, dateTime, humanize, inr, shortDate } from '@/lib/format'
 import type { CaseFull, FieldValue, Finding } from '@/lib/types'
@@ -15,6 +15,37 @@ export function Overview({ c, findings, goTo }: { c: CaseFull; findings: Finding
       <KeyFacts c={c} goTo={goTo} />
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         <div className="space-y-5">
+          <Panel>
+            <PanelHead title="Key findings" sub="The short version. Each line links to its evidence; open Findings for why it matters and how certain it is."
+              aside={<button className="text-[12.5px] text-accent hover:underline" onClick={() => goTo('findings')}>All findings</button>} />
+            {a.key_findings.length || c.related_count ? (
+              <ol className="divide-y divide-rule-2">
+                {!!c.related_count && (
+                  <li className="flex items-start gap-3 px-4 py-2 text-[13.5px]">
+                    <span className="tabular w-6 shrink-0 font-mono text-[12.5px] text-muted">00</span>
+                    <span className="flex-1">{c.beneficiary ? <>Beneficiary <span className="font-mono">{c.beneficiary}</span> or another identifier appears in </> : 'Identifiers appear in '}
+                      {c.related_count} other submitted case{c.related_count > 1 ? 's' : ''} — possible related cases</span>
+                    <button className="text-[12.5px] text-accent hover:underline" onClick={() => goTo('connections')}>Connections</button>
+                  </li>
+                )}
+                {a.key_findings.map(k => (
+                  <li key={k.code} className="flex items-start gap-3 px-4 py-2 text-[13.5px]">
+                    <span className="tabular w-6 shrink-0 font-mono text-[12.5px] text-muted">{String(k.n).padStart(2, '0')}</span>
+                    <span className="flex-1">{k.text}</span>
+                    {k.is_conflict && <Badge tone="bad">Conflict</Badge>}
+                    {k.category === 'MISSING' && <Badge tone="outline">Missing</Badge>}
+                    <Sources sources={k.sources} />
+                  </li>
+                ))}
+              </ol>
+            ) : <p className="px-4 py-3 text-[13px] text-muted">No findings yet.</p>}
+          </Panel>
+          <Panel>
+            <PanelHead title="Customer statement" sub="In the customer's own words — a claim, not verified." />
+            <p className="px-4 py-3 text-[13.5px] leading-relaxed">“{c.statement}”
+              {(c.claimed_amount || c.approx_date) && <span className="mt-1 block text-[12.5px] text-muted">
+                Customer also gave: {c.claimed_amount ? inr(c.claimed_amount) : ''}{c.claimed_amount && c.approx_date ? ' · ' : ''}{c.approx_date ? shortDate(c.approx_date) : ''}</span>}</p>
+          </Panel>
           <Panel>
             <PanelHead title="Disputed transaction"
               sub={d ? (d.match_basis ? `Matched across sources: ${d.match_basis}` : 'Found in a single source') : undefined} />
@@ -31,6 +62,25 @@ export function Overview({ c, findings, goTo }: { c: CaseFull; findings: Finding
               ))}
             </ul>
           </Panel>
+          {a.modus?.length > 0 && (
+            <Panel>
+              <PanelHead title="Possible fraud pattern" sub={a.modus[0].note} />
+              <ul className="divide-y divide-rule-2">
+                {a.modus.map(m => (
+                  <li key={m.code} className="px-4 py-2.5 text-[13px]">
+                    <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{m.label}</span><Badge tone="outline">{m.strength}</Badge>
+                      <span className="text-muted">{m.signal_groups.length} independent signal types</span></div>
+                    <ul className="mt-1 space-y-0.5 text-[12.5px]">
+                      {m.signals.slice(0, 5).map((sg, i) => (
+                        <li key={i} className="flex flex-wrap items-center gap-1.5"><span className="text-muted">{sg.label}:</span><span>“{sg.quote.slice(0, 90)}”</span>
+                          {sg.evidence_id ? <Sources sources={[{ evidence_id: sg.evidence_id, entity_id: sg.entity_id ?? undefined }]} /> : <Badge tone="outline">customer statement</Badge>}</li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          )}
           {conflicts.length > 0 && (
             <Panel className="border-contra/30">
               <PanelHead title={`Evidence conflicts (${conflicts.length})`} sub="The system does not decide which evidence is correct. Both sides are preserved for review."
@@ -62,13 +112,14 @@ function KeyFacts({ c, goTo }: { c: CaseFull; goTo: (t: string) => void }) {
     ['Disputed amount', inr(d?.amount ?? null), null],
     ['Transaction time', d?.occurred_at ? dateTime(d.occurred_at) : 'Not in evidence', d && d.time_precision !== 'EXACT' && d.occurred_at ? 'approximate' : null],
     ['Evidence completeness', `${a.completeness.score}%`, null, 'overview-completeness'],
+    ['Related cases', String(c.related_count ?? 0), null, 'connections'],
     ['Evidence items', String(a.counts.evidence), null, 'sources'],
     ['Observed anomalies', String(a.counts.anomalies), null, 'findings'],
     ['Evidence conflicts', String(a.counts.conflicts), null, 'findings'],
     ['Missing evidence', String(a.counts.missing), null, 'findings'],
   ]
   return (
-    <dl className="grid grid-cols-2 border-y border-rule bg-surface sm:grid-cols-4 xl:grid-cols-7">
+    <dl className="grid grid-cols-2 border-y border-rule bg-surface sm:grid-cols-4 xl:grid-cols-8">
       {items.map(([k, v, note, tab]) => (
         <div key={k} className="border-r border-rule-2 px-4 py-3 last:border-r-0">
           <dt className="text-[12px] text-muted">{k}</dt>
@@ -96,6 +147,7 @@ const FIELDS: [string, string, (v: any) => string][] = [
 
 function FieldTable({ c, conflicts }: { c: CaseFull; conflicts: Finding[] }) {
   const d = c.disputed!
+  const fs = c.analysis?.field_status ?? {}
   const conflictFields = new Set(conflicts.map(f => f.data?.field).filter(Boolean))
   return (
     <table className="w-full text-[13px]">
@@ -109,7 +161,7 @@ function FieldTable({ c, conflicts }: { c: CaseFull; conflicts: Finding[] }) {
             <tr key={key} className={cn('border-b border-rule-2 align-top last:border-0', conflict && 'bg-contra-tint')}>
               <th scope="row" className="w-[160px] px-4 py-2 text-left font-normal text-muted">{label}</th>
               <td className="px-2 py-2">
-                {groups.size === 0 ? <span className="text-faint">Not available in submitted evidence</span> : (
+                {groups.size === 0 ? <span className="text-faint">{key === 'time' && d.time_of_day ? `${d.time_of_day} — date unavailable` : 'Not found in submitted evidence'}</span> : (
                   <div className="space-y-1">
                     {[...groups.entries()].map(([val, vs]) => (
                       <div key={val} className="flex flex-wrap items-center gap-2">
@@ -121,9 +173,9 @@ function FieldTable({ c, conflicts }: { c: CaseFull; conflicts: Finding[] }) {
                   </div>
                 )}
               </td>
-              <td className="w-[140px] whitespace-nowrap px-4 py-2 text-right">
-                {conflict ? <Badge tone="bad">Conflict</Badge> : groups.size > 1 ? <Badge tone="outline">Several values</Badge>
-                  : new Set(vals.map(v => v.evidence_id)).size > 1 ? <Badge tone="ok">Agrees</Badge> : null}
+              <td className="w-[230px] px-4 py-2 text-right">
+                {fs[key] && fs[key].state !== 'NOT_FOUND' ? <FieldStateBadge state={fs[key].state} label={fs[key].label} />
+                  : conflict ? <Badge tone="bad">Conflict</Badge> : null}
               </td>
             </tr>
           )

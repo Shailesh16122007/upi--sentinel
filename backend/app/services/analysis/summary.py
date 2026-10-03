@@ -66,7 +66,7 @@ def deterministic(case: dict, disputed, evidence: dict, findings: list[dict], co
     if stm:
         evs = sorted({x["label"] for f in stm for x in f["sources"] if "label" in x}, key=_ord)
         s.append({"text": f"{', '.join(evs)} contain statements in which the other party "
-                          + "; ".join(sorted({f['title'].split(': ', 1)[-1].replace('Speaker ', '') for f in stm}))
+                          + "; ".join(sorted({f['title'].split(': ', 1)[-1].replace('Speaker ', '').replace('Caller ', '').replace('Sender ', '') for f in stm}))
                           + ". These are unverified statements, not established facts.", "sources": evs})
     auth = pick(code_prefix="AUTH_EVENT_PRESENT")
     if auth:

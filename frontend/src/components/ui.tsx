@@ -1,8 +1,9 @@
 /* Small component kit in the shadcn/ui pattern (Radix primitives + CVA + Tailwind), written in-repo. */
+import * as DialogPrimitive from '@radix-ui/react-dialog'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { forwardRef, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
-import { cn } from '@/lib/format'
+import { cn, STATUS_TONE } from '@/lib/format'
 
 const button = cva(
   'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--radius-sm)] text-[13px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50',
@@ -83,3 +84,60 @@ export const Field = ({ label, hint, children }: { label: string; hint?: string;
 )
 
 export const inputCls = 'w-full rounded-[var(--radius-sm)] border border-rule bg-surface px-2.5 py-1.5 text-[14px] text-ink placeholder:text-faint focus:border-accent focus:outline-none'
+
+/* ------------------------------------------------------------------ V2 additions */
+
+export const StatusBadge = ({ status, label, className }: { status: string; label: string; className?: string }) =>
+  <Badge tone={STATUS_TONE[status] ?? 'neutral'} className={className}>{label}</Badge>
+
+export const SyntheticBadge = () => <Badge tone="bad" title="Synthetic demonstration data — not a real dispute">DEMO · synthetic</Badge>
+
+export function Stat({ label, value, hint, onClick, tone }: { label: string; value: ReactNode; hint?: ReactNode; onClick?: () => void; tone?: 'warn' | 'ok' | 'bad' }) {
+  const Comp = onClick ? 'button' : 'div'
+  return (
+    <Comp onClick={onClick} className={cn('flex flex-col items-start rounded-[var(--radius-md)] border border-rule bg-surface px-4 py-3 text-left',
+      onClick && 'hover:border-accent/50 hover:bg-tint/40')}>
+      <span className="text-[12.5px] text-muted">{label}</span>
+      <span className={cn('tabular mt-0.5 text-[24px] font-semibold leading-tight',
+        tone === 'warn' && 'text-missing', tone === 'ok' && 'text-ok', tone === 'bad' && 'text-contra')}>{value}</span>
+      {hint && <span className="mt-0.5 text-[12px] text-faint">{hint}</span>}
+    </Comp>
+  )
+}
+
+export const PageHead = ({ title, sub, aside }: { title: ReactNode; sub?: ReactNode; aside?: ReactNode }) => (
+  <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{title}</h1>
+      {sub && <p className="mt-0.5 text-[13.5px] text-muted">{sub}</p>}
+    </div>
+    {aside}
+  </div>
+)
+
+export const selectCls = 'h-8 rounded-[var(--radius-sm)] border border-rule bg-surface px-2 text-[13px] text-ink focus:border-accent focus:outline-none'
+
+export function Dialog({ open, onOpenChange, title, children, wide }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; children: ReactNode; wide?: boolean }) {
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-ink/25" />
+        <DialogPrimitive.Content className={cn('fixed left-1/2 top-[12vh] z-50 max-h-[80vh] w-[calc(100%-32px)] -translate-x-1/2 overflow-y-auto rounded-[var(--radius-md)] border border-rule bg-surface shadow-[0_12px_40px_rgba(19,35,63,0.18)]',
+          wide ? 'max-w-[720px]' : 'max-w-[520px]')}>
+          <div className="flex items-center justify-between border-b border-rule-2 px-5 py-3">
+            <DialogPrimitive.Title className="text-[15px] font-semibold">{title}</DialogPrimitive.Title>
+            <DialogPrimitive.Close className="text-[13px] text-muted hover:text-ink" aria-label="Close">Close</DialogPrimitive.Close>
+          </div>
+          <DialogPrimitive.Description className="sr-only">{title}</DialogPrimitive.Description>
+          <div className="px-5 py-4">{children}</div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  )
+}
+
+export const FieldStateBadge = ({ state, label }: { state: string; label: string }) => {
+  const tone = ({ CONFIRMED: 'ok', SINGLE_SOURCE: 'neutral', NEEDS_REVIEW: 'warn', APPROXIMATE: 'warn', PARTIAL: 'warn',
+    CONFLICT: 'bad', NOT_FOUND: 'outline' } as const)[state] ?? 'neutral'
+  return <Badge tone={tone}>{label}</Badge>
+}

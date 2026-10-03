@@ -1,84 +1,100 @@
 # Architecture
 
 ```
- Browser (React + Vite)                         FastAPI (Python)
- ───────────────────────                        ─────────────────────────────────────────────────────────
- /cases/new  ── statement ───────────────────▶  POST /cases
- /cases/:id/evidence ── files / pasted text ──▶  POST /cases/:id/evidence[/text]
-                                                    │ validate (extension + magic bytes + size)
-                                                    │ write-once storage, SHA-256, audit
-                                                    ▼  background task, per file
-                                                 services/ingest.process
-                                                    ├─ IMAGE      → services/ocr (Tesseract, preprocessing, word confidences)
-                                                    ├─ AUDIO      → services/audio/stt (faster-whisper, local; translate non-English)
-                                                    ├─ DOCUMENT   → services/documents (TXT, PDF text layer, scanned PDF → OCR, DOCX)
-                                                    ├─ MESSAGE    → plain text
-                                                    └─ STRUCTURED → services/extraction/structured (CSV/JSON history & logs)
-                                                    ▼
-                                                 services/extraction/entities  (amount, date/time, UTR/ref, UPI ID, phone,
-                                                    account, payee, bank, status, channel, URLs, language signals)
-                                                 services/extraction/claims    (statements: identity claim, requested action,
-                                                    pressure, inducement, listener confirmation)  → extracted_entities
-                                                    ▼  when no file is still processing
-                                                 services/analysis/run
-                                                    ├─ normalization/fuse   mentions → linked transactions + conflicts
-                                                    ├─ analysis/timeline    documented / statement / approximate events
-                                                    ├─ analysis/context     amount, time, beneficiary, device, session, sequence
-                                                    ├─ analysis/ml          Isolation Forest on the customer's own history
-                                                    ├─ analysis/findings    supporting / contradictory / contextual / missing
-                                                    │                        + completeness checklist
-                                                    └─ analysis/summary     deterministic (optional validated LLM rewrite)
- /cases/:id/investigation ◀── GET findings / timeline / graph / evidence
- /cases/:id/report        ◀── POST /cases/:id/report  → services/reporting/pdf (ReportLab)
+ Browser (React + Vite)                FastAPI (Python)                                   PostgreSQL
+ ─────────────────────                 ───────────────────────────────────────────────     ──────────
+ /login            ── sign in ───────▶ api/auth      accounts, roles, sessions (token stored hashed)
+ /my/*  (customer)                     api/cases     cases, evidence, timeline, findings, reports   ─┐
+ /bank/* (bank)    ── Bearer token ──▶ api/workflow  submit, transitions, dispositions, requests,    │ every
+ /cyber/* (cyber)                                    notifications, customer view                    │ endpoint:
+                                       api/intel     dashboards, related cases, clusters, network,   │ permissions
+                                                     export, audit                                    ─┘ .require_view
+                                                          │
+            upload ─▶ ingest.store: validate type + magic bytes + size → SHA-256 → duplicate check →
+                      write-once original (0440) → EvidenceHash record → audit
+                    ─▶ background: ingest.process on a WORKING COPY (original never opened for processing)
+                         IMAGE   OCR (Tesseract; English + script-detected Indian model) + image indicators
+                         AUDIO   faster-whisper (original language kept; English translation for extraction)
+                         VIDEO   audio transcription + OCR of sampled frames
+                         DOCUMENT PDF text / scanned-PDF OCR / DOCX / TXT / EML
+                         STRUCTURED CSV / JSON bank exports
+                       → extraction/entities (amount + validation, date/time, UTR/ref incl. split lines, UPI ID +
+                         handle check, phone, e-mail, account, payee, bank, status, debit/credit/balance)
+                       → extraction/claims (statements as claims: “Caller claimed to represent a bank”)
+                       → extraction/lexicon + language (English/Hinglish/Hindi/Tamil signals; detected language)
+                    ─▶ analysis/run (whenever no file is still processing):
+                         normalization/fuse   mentions → transactions, cross-source matching, conflicts,
+                                              persisted “which payment is disputed” selection
+                         analysis/timeline    plain-language + investigator text, source kinds, no invented dates
+                         analysis/context, ml, findings, modus (multi-signal scam patterns)
+                         analysis/explain     why it matters, certainty, key findings, customer view, field states
+                         analysis/summary     every sentence cites evidence codes
+                    ─▶ crosscase.refresh: identifiers → possible related cases → mule clusters (recomputed)
 ```
+
+## Case lifecycle (services/lifecycle.py)
+
+```
+DRAFT ─submit→ SUBMITTED ─start_review→ BANK_REVIEW ⇄ EVIDENCE_REQUESTED   (customer upload returns it automatically)
+                                          │
+                                          ├─escalate→ ESCALATED ─accept→ CYBER_REVIEW ⇄ INFO_REQUESTED (bank responds)
+                                          │                └─return→ BANK_REVIEW
+                                          │           CYBER_REVIEW → UNDER_INVESTIGATION ⇄ PENDING → RESOLVED → CLOSED
+                                          └─resolve→ RESOLVED ─close→ CLOSED        (reopen / resume go back)
+```
+
+Each transition declares the roles allowed, the states it can start from, whether a note is required, and whether it
+applies only while the bank or cyber crime holds the case. `lifecycle.apply` validates, writes a `CaseAction`, an audit line
+and the notifications. Bank dispositions (outcome, account action, reversal status) are configurable
+`case_status_options` rows per bank and are recorded the same way. The customer sees plain-language labels and
+`victim_message` updates only.
+
+## Permissions (services/permissions.py)
+
+| | Can see | Cannot |
+|---|---|---|
+| Customer | own cases (`owner_id`) — simplified analysis, plain timeline, own reports | other customers' cases (404), findings/notes/graph/audit (403), investigator reports |
+| Bank | submitted cases routed to its bank (`bank_org`) | drafts, other banks' cases, cyber-only notes, editing evidence or audit |
+| Cyber crime | cases ever escalated | non-escalated cases (summary rows only in related-case lists) |
+
+Checks happen on the server for every request; the UI hiding a button is never the control.
 
 ## Principles enforced in code
 
 | Rule | Where |
 |---|---|
-| Every fact keeps its source | `extracted_entities.evidence_id`, `locator`, `method`, `confidence`; findings and timeline events carry `sources` |
-| No invented timestamps | Entities get `occurred_at` only with `time_precision` EXACT / DATE_ONLY / TIME_ONLY / USER_HINT; timeline marks anything not EXACT as approximate and lists undated items separately |
-| Conflicts are never silently resolved | `fuse._collect` keeps all values per field; disagreements from different sources become `is_conflict` findings |
-| Statements ≠ facts | Audio/chat statements are `CLAIM` entities labelled "Statement extracted from audio"; findings say "not verified" |
-| No fraud verdict | Case status is OPEN → UNDER_REVIEW → REPORT_READY → CLOSED; anomalies are "anomalous activity" |
-| Honest degradation | OCR/STT/LLM/ML each report *unavailable* with a reason instead of producing output |
-| Originals preserved | Stored as `{uuid}.{ext}` (never the user's filename), mode 0440, SHA-256 checked on every download |
-| Synthetic data separated | `is_synthetic` on cases and evidence, `DEMO-` case refs, separate list, banners and PDF watermark |
-| LLM sees structure, not files | `summary.llm_rewrite` gets findings + evidence codes only; output rejected if it cites a code that doesn't exist |
-
-## Fusion (how sources become one transaction)
-
-1. Each financial evidence item yields *mentions* (amount, references, time, payee …). Items with several
-   amounts (statements) yield one mention per line.
-2. Two mentions link when: same reference (exact or ≥6-digit suffix) → 0.95; same amount and times ≤10 min
-   apart → 0.85; same amount, same date → 0.65; same amount only, and that amount is unique → 0.5.
-   Mentions that both carry *different* references never link.
-3. Linked mentions are unioned; history rows that match a cluster join it, the rest form the baseline.
-4. The disputed transaction is the cluster matching the customer's stated amount, else the best-supported one.
-
-## Completeness score
-
-Weighted checklist (statement 10, amount 10, timestamp 10, reference 10, beneficiary 10, bank confirmation 10,
-communication 10, history 10, device 8, auth logs 6, network 6). Present = full weight, partial = half.
-The breakdown and formula are shown in the UI and report.
+| Every fact keeps its source | entities carry `evidence_id`, `locator`, `method`, `confidence`; findings/timeline carry sources |
+| No invented values | `field_status` NOT_FOUND; time-of-day without a date stays undated; amounts in e-mails/chats are not payments unless the item shows one |
+| Doubtful OCR is flagged | `needs_review` on amounts (letters next to digits, odd grouping, missing ₹), unknown UPI handles, unlabelled 12-digit numbers |
+| Conflicts are never resolved silently | `fuse._collect`; CONFLICT field state and findings |
+| Claims stay claims | CLAIM entities worded “Caller claimed / stated …” |
+| One keyword is not a scam category | `modus.classify` needs an anchor + a supporting signal group, from evidence (not only the statement) |
+| Originals never modified | write-once file, processing on a copy, SHA-256 re-verified on every read and before processing |
+| Human notes are separate | `investigator_notes` (incl. finding reviews) are never touched by re-analysis |
+| Synthetic data separated | `is_synthetic` on cases/evidence/identifiers/clusters; `DEMO-` IDs; banners; watermark |
+| Reports are versioned | `reports` (case + audience) → `report_versions` with evidence count, status, changes |
 
 ## Data model
 
-`cases`, `evidence_files`, `extracted_entities`, `case_transactions` (DISPUTED / RELATED / HISTORICAL),
-`timeline_events`, `findings`, `evidence_relationships`, `investigator_notes`, `reports`, `audit_logs`.
-The risk-API module adds `users`, `devices`, `beneficiaries`, `account_links`, `transactions`, `risk_signals`.
-All timestamps are stored as UTC through a `UTCDateTime` type (SQLite and PostgreSQL behave the same).
+Existing (extended): `cases` (owner, bank routing, lifecycle timestamps, dispositions, disputed selection), `evidence_files`
+(uploader, image indicators, language), `extracted_entities`, `case_transactions`, `timeline_events` (plain text, source kinds),
+`findings` (why, certainty), `evidence_relationships`, `investigator_notes` (author, visibility, finding review), `reports`,
+`audit_logs` (actor id/role).
+
+New: `roles`, `accounts`, `victim_profiles`, `bank_profiles`, `authority_profiles`, `auth_sessions`, `case_status_options`,
+`case_assignments`, `investigations`, `case_actions`, `evidence_requests`, `notifications`, `evidence_hashes`,
+`entity_relationships`, `case_relationships`, `mule_clusters`, `report_versions`.
+The risk-API module keeps `users`, `devices`, `beneficiaries`, `account_links`, `transactions`, `risk_signals`.
+
+`app/migrate.py` adds missing tables/columns (and widens VARCHARs on PostgreSQL) at startup, so an older database is upgraded in place.
 
 ## Frontend
 
-React 19 + TypeScript + Vite + Tailwind v4. UI primitives follow the shadcn/ui pattern (Radix + CVA, written
-in `src/components/ui.tsx` because the shadcn registry was not reachable from the build environment).
-TanStack Query polls processing status; React Flow draws the evidence graph; Recharts plots the customer's
-history against the disputed payment. Files are fetched with the API key and shown via object URLs — there
-are no public file URLs.
+React 19 + TypeScript + Vite + Tailwind v4, TanStack Query, React Flow (evidence graph, mule network), Recharts (history).
+`lib/auth.tsx` keeps only the sign-in token in the browser; all case data comes from the API. Navigation, dashboards and
+case views are separate per role (`pages/victim/*`, `pages/staff/*`); the investigation components are shared by bank and cyber crime.
 
-## Real-time risk module (secondary)
+## Real-time risk module (secondary, unchanged)
 
-`POST /api/v1/transactions/check` scores a payment in a few milliseconds from rules + a gradient-boosted model
-(trained on synthetic data) + NetworkX distance to watch-listed accounts, returns ALLOW / VERIFY / WARN / BLOCK,
-and records the user's decision. `POST /cases/from-risk-transaction/{id}` opens a dispute with that record as E1.
+`POST /api/v1/transactions/check` (partner `X-API-Key`) scores a payment before authorisation;
+`POST /cases/from-risk-transaction/{id}` opens a dispute with the platform's own record as evidence.

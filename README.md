@@ -1,127 +1,150 @@
 # UPI Sentinel
 
-**Reconstruct the transaction. Understand the evidence.**
+**From complaint to resolution — one evidence trail.**
 
-UPI Sentinel is an evidence-first investigation workstation for disputed UPI transactions. A customer
-describes what happened in a sentence or two and uploads whatever they have — screenshots, bank SMS,
-call recordings, PDFs, pasted messages. UPI Sentinel reads each item (OCR, speech-to-text, document
-parsing), extracts transaction facts with provenance, matches the same transaction across sources,
-rebuilds the timeline, flags anomalous activity and conflicts, lists what is missing, and produces a
-PDF dispute report. It never decides "fraud / not fraud" — that belongs to the human investigator.
+UPI Sentinel is a case management system for disputed UPI payments, used by three roles on the **same case record**:
 
-It also contains an optional **real-time risk-check API** (`POST /api/v1/transactions/check`) that a
-PSP app or bank can call before authorising a payment; a disputed payment that went through that API
-can be opened as a case with the platform's own record attached as evidence.
+| Role | What they do |
+|---|---|
+| **Customer (victim)** | Describes what happened in their own words, uploads whatever proof they have (screenshots, SMS, chats, call recordings, PDFs), sees a plain-language timeline and findings, submits the case, answers the bank's requests and tracks progress. |
+| **Bank investigator** | Works a case queue, sees the reconstructed timeline with every fact linked to the original file, reviews explainable findings, requests more evidence, records outcomes / account actions / reversal status, escalates to cyber crime, generates a versioned investigation report. |
+| **Cyber crime officer** | Receives escalated cases, sees the full investigation and the bank's work, related cases and mule clusters, requests information from the bank, moves the case through investigation, pending, resolved or closed, and downloads a structured export for manual entry into official systems. |
+
+```
+CUSTOMER ─submit→ BANK ─escalate→ CYBER CRIME ─→ RESOLVED / PENDING / CLOSED
+   ↑   ←─ request evidence ─┘  ↑   ←─ request info / return ─┘          │
+   └──────────────── every status change is visible to the customer ←───┘
+```
+
+UPI Sentinel never decides "fraud / not fraud". It reads the evidence, links it, shows where each fact came from,
+what conflicts and what is missing. The decision belongs to the authorised investigator.
 
 ---
 
-## Run it locally
+## Run it
 
-Prerequisites: **Python 3.11+**, **Node 20+**, **Tesseract OCR**, **ffmpeg** (audio decoding).
+Prerequisites: **Python 3.11+**, **Node 20+**, **PostgreSQL 14+** (or Docker), **Tesseract OCR**, **ffmpeg**.
 
-| OS | Install Tesseract + ffmpeg |
+| OS | Tesseract (+ Hindi/Tamil models) and ffmpeg |
 |---|---|
-| Ubuntu / Debian | `sudo apt install tesseract-ocr ffmpeg` |
-| macOS | `brew install tesseract ffmpeg` |
-| Windows | Tesseract installer from UB-Mannheim; `winget install ffmpeg`. Add both to PATH. |
+| Ubuntu / Debian | `sudo apt install tesseract-ocr tesseract-ocr-hin tesseract-ocr-tam ffmpeg` |
+| macOS | `brew install tesseract tesseract-lang ffmpeg` |
+| Windows | Tesseract installer from UB-Mannheim (tick Hindi/Tamil); `winget install ffmpeg`. Add both to PATH. |
 
 ```bash
-# 1. Backend
+# 1. Database
+docker compose up -d postgres            # or use any PostgreSQL; see SENTINEL_DATABASE_URL below
+
+# 2. Backend
 cd backend
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env                                     # points at the PostgreSQL above
 python -m app.tools.fetch_models                         # one-time speech-to-text model download (~150 MB)
 uvicorn app.main:app --port 8000                         # API docs at http://127.0.0.1:8000/docs
 
-# 2. Frontend (new terminal)
+# 3. Frontend (new terminal)
 cd frontend
 npm install
-cp .env.example .env.local
 npm run dev                                              # open http://127.0.0.1:5173
 ```
 
-Or, on macOS/Linux after installing dependencies once: `./run.sh` starts both.
+Tables are created and upgraded automatically at startup (additive migration — a V1 database keeps its cases).
+Without PostgreSQL, remove `SENTINEL_DATABASE_URL` from `.env` to fall back to a local SQLite file.
 
-SQLite is used by default so it runs with no database setup. For PostgreSQL:
+### Sign in
 
-```bash
-docker compose up -d postgres
-# backend/.env
-SENTINEL_DATABASE_URL=postgresql+psycopg://sentinel:sentinel@127.0.0.1:5432/sentinel
-```
+The login page lists the **demo accounts** (development / demo deployments only, `SENTINEL_SHOW_DEMO_ACCOUNTS`):
 
-Tables are created on startup (`Base.metadata.create_all`).
+| Account | Email | Password |
+|---|---|---|
+| Victim demo | victim@demo.upisentinel.in | Victim@2026 |
+| Victim demo (second, for permission checks) | victim2@demo.upisentinel.in | Victim@2026 |
+| Bank investigator demo — *Demo Bank* | bank@demo.upisentinel.in | Bank@2026 |
+| Bank investigator demo — *Sample Bank* (cannot see Demo Bank's cases) | bank2@demo.upisentinel.in | Bank@2026 |
+| Cyber crime officer demo | cyber@demo.upisentinel.in | Cyber@2026 |
 
-## Try it
+The role comes from the account. Nobody chooses a role at sign-in.
 
-1. **Load synthetic demo case** on the home page — a fully synthetic dispute (watermarked screenshot,
-   bank SMS, call recording + transcript, 60-row history, device/auth log) run through the real pipeline.
-2. **Real-evidence test** — *Start a new dispute*, then upload the files in `backend/sample_uploads/`:
-   - `upi_screenshot_847291.png` → OCR extracts ₹25,000 · UPI · 03 Oct 2026 · 10:32 PM · Ref 847291
-   - paste the text of `bank_sms_847291.txt` → same amount and reference; the two are matched as one transaction
-   - `scam_call.wav` → transcribed by Whisper (or shown as *Audio transcription unavailable* if the model is not installed)
-   - `bank_sms_conflicting_amount.txt` → ₹20,000 with the same reference: reported as an **amount conflict**, both values kept
-   - `transaction_history.csv` (advanced) → enables amount/time/beneficiary anomalies and the Isolation Forest check
-3. Open the investigation, click any **E1 / E2…** tag to inspect the original and what was extracted from it,
-   add a note, then *Generate report* → *Download report*.
+## Try it with your own evidence
 
-See [DEMO.md](DEMO.md) for a judge-ready script.
+1. Sign in as **Victim demo** → **Report a fraud** → write one or two sentences → continue.
+   Leave “Mark as a synthetic demo case” **unticked** for real evidence.
+2. Upload your screenshots, paste an SMS, add a call recording or a statement PDF. Nothing needs renaming or reformatting.
+3. Watch *Your evidence*: each file shows only the steps that actually completed (“Screenshot read”, “Transaction details found”…).
+   Unreadable files say so and are kept; the rest of the case continues.
+4. Check *The payment you are reporting* — each value shows where it came from and whether it is confirmed by several files,
+   needs review, or was not found. If a file holds several payments you are asked which one you are disputing.
+5. **Submit case**, then sign in as **Bank investigator demo** and open the case from *Cases*.
+
+See [DEMO.md](DEMO.md) for the full three-role script and the synthetic “related cases” demonstration.
 
 ## Tests
 
 ```bash
-cd backend && pytest            # 27 tests: OCR, SMS formats, fusion, conflicts, audio fallback + stubbed Whisper,
-                                # history/ML, demo pipeline, graph, PDF contents, audit, validation, risk API
+cd backend && pytest                    # 53 tests: extraction, unknown-file robustness, lifecycle, permissions,
+                                        # related cases, reports, export, V1→V2 migration, risk API
+SENTINEL_TEST_DATABASE_URL=postgresql+psycopg://sentinel:sentinel@127.0.0.1:5432/sentinel_test pytest   # same suite on PostgreSQL
 cd frontend && npx tsc -b && npm run lint && npm run build
+
+# Browser test of the full three-role flow (needs both servers running and Playwright installed):
+python -m tests.unknown.make_fixtures /tmp/sentinel-fixtures     # from backend/
+node e2e/three_roles.cjs all            # victim → bank → evidence request → victim → bank → cyber crime → victim
+#   restart backend + frontend, then:
+node e2e/three_roles.cjs after-restart  # the case, its evidence and audit trail survive the restart
+node e2e/demo_moment.cjs                # synthetic demo: "This beneficiary appears in 3 other submitted cases"
 ```
 
 ## Configuration (backend `.env`, prefix `SENTINEL_`)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | SQLite file | Use PostgreSQL in deployment |
-| `API_KEYS` | `demo-psp-key` | Comma-separated keys accepted in `X-API-Key` |
-| `CORS_ORIGINS` | `http://localhost:5173,…` | Allowed browser origins |
-| `STORAGE_DIR` | `backend/storage` | Evidence originals (write-once, 0440) and reports |
-| `MAX_UPLOAD_MB` / `MAX_AUDIO_MB` | 15 / 40 | Size limits |
-| `STT_ENGINE` | `faster-whisper` | `none` disables speech-to-text |
-| `WHISPER_MODEL` | `base` | `small` is more accurate for Hindi/English mixed calls |
-| `OCR_LANG` | `eng` | e.g. `eng+hin` if the Hindi traineddata is installed |
-| `ML_MIN_HISTORY` | 20 | History rows required before Isolation Forest runs |
-| `ANTHROPIC_API_KEY` | unset | Optional: LLM rewrites the summary from structured findings only |
+| `DATABASE_URL` | SQLite file | PostgreSQL recommended: `postgresql+psycopg://user:pass@host:5432/db` |
+| `STORAGE_DIR` | `backend/storage` | Original evidence (write-once, 0440), processing copies, reports |
+| `SESSION_HOURS` | 12 | Sign-in session length |
+| `SHOW_DEMO_ACCOUNTS` | true | Show demo sign-in details on the login page — set `false` in production |
+| `SEED_DEMO` | true | Create the three synthetic background complaints used by the related-case demo |
+| `MAX_UPLOAD_MB` / `MAX_AUDIO_MB` | 15 / 40 | Size limits (audio/video use the larger one) |
+| `STT_ENGINE` / `WHISPER_MODEL` | `faster-whisper` / `base` | `small` is more accurate for Hindi/English mixed calls; `none` disables |
+| `OCR_LANG` | `auto` | English, plus the Indian-script model Tesseract detects on that image |
+| `ML_MIN_HISTORY` | 20 | History rows required before the Isolation Forest check runs |
+| `API_KEYS` | `demo-psp-key` | Partner keys for the real-time risk API only (`X-API-Key`) |
+| `ANTHROPIC_API_KEY` | unset | Optional: LLM rewrites the investigator summary from structured findings only (validated) |
 
-Frontend `.env.local`: `VITE_API_TARGET` (proxy target) and `VITE_API_KEY`.
+Reset synthetic demo data (development only; real cases are never touched): `python -m app.tools.reset_demo`.
 
 ## What is real and what is not
 
-Everything listed in the UI is computed from the uploaded files. Nothing is hard-coded per case.
-When a capability is missing the app says so and keeps going:
+Every number, status, finding and timeline entry is computed from case records and uploaded files. Synthetic demo
+cases are labelled **DEMO · synthetic** everywhere (IDs `DEMO-…`, banners, PDF watermark) and are never combined with
+real cases in related-case or cluster calculations.
 
 | If… | The app shows |
 |---|---|
-| OCR can't read an image reliably | "Could not reliably extract text from this image." — no values invented |
-| Speech-to-text model not installed | "Audio transcription unavailable" — recording kept; a person may attach a transcript, labelled *provided by user* |
-| No LLM key | Deterministic summary (labelled) |
-| < 20 history rows | "ML analysis unavailable — insufficient historical transaction data" |
+| A value is not in the evidence | “Not found in submitted evidence” — never a guess |
+| OCR read something doubtful (e.g. `₹25000O`, a currency symbol read as `~`, an unknown UPI handle) | The value with **Needs review** and the reason |
+| Two files disagree | **Evidence conflict** — both values kept, nothing chosen |
+| Only a time is known | “10:32 PM — date unavailable” |
+| A screenshot can't be read / a recording can't be transcribed / a PDF is corrupt | The plain-language reason; the original is preserved; other files still process |
+| Speech-to-text model not installed | “We could not transcribe this recording” — the customer can type what was said (labelled as typed) |
+| A file was uploaded twice | “This file appears to have already been uploaded” (SHA-256 match) |
+| Image checks find nothing | “No obvious technical indicators found” + the checks that ran — never “authentic” |
 
 ## Known limitations
 
-- **Authentication is an API key** shared by the frontend (fine for a local demo, not for production —
-  add per-user login and roles before real use).
-- **Speech-to-text** needs a one-time model download; in this repo's CI/sandbox it was verified with a
-  stubbed model and the unavailable path, not with real Whisper inference.
-- **OCR** is tuned for English phone screenshots. Handwriting, very low-resolution photos and Devanagari
-  text need `OCR_LANG=eng+hin` and may still be weak. The ₹ sign is often read as `¥`/`%`; this is
-  handled and flagged in the extracted value.
-- **Extraction is rule-based** (regex + vocabularies) for Indian bank SMS/UPI formats. Unusual formats may be missed —
-  the source panel always shows the full extracted text so an investigator can check.
-- **Transaction matching** links sources by reference number, or by the same amount within 10 minutes.
-  Two different payments of the same amount at nearly the same time without references could be merged.
-- **Timeline** uses only times written in the evidence or entered by the user; audio statements are placed in time
-  only if the user said when the call started.
-- Processing runs in-process (FastAPI background tasks). For many concurrent users, move it to a worker queue.
-- DOCX is supported; legacy `.doc`, HEIC images and video/screen recordings are not.
+- **Speech-to-text needs a one-time model download** (`python -m app.tools.fetch_models`). In the build environment the model
+  host was blocked, so transcription was verified with a stubbed model and the unavailable path, not with real Whisper output.
+  Whisper does not separate speakers; the transcript says so instead of inventing “Speaker 1 / 2”.
+- **Extraction is rule-based** (patterns + vocabularies for Indian bank SMS, UPI apps and statements, English / Hinglish /
+  Hindi / Tamil signals). Unusual layouts may be missed — the source panel always shows the full extracted text.
+  Language detection is a transparent script/marker-word heuristic, not a translation engine.
+- **Image manipulation checks are lightweight** (metadata, compression consistency for JPEGs, size). They are indicators only.
+- **External actions are prototype actions.** The “File a cyber crime complaint” option links to the official portal; the
+  structured export is for manual entry. There is no integration with NCRP/CFCFRMS or any bank.
+- **Short references** (e.g. 6-digit) are used for matching within a case but not for cross-case links (too ambiguous).
+- Processing runs in-process (FastAPI background tasks, resumed after a restart). For many concurrent users, move it to a worker queue.
+- HEIC photos and legacy `.doc` are not supported; video frames are sampled for OCR (8 frames), not fully analysed.
+- Accounts are seeded demo accounts; there is no self-registration or admin UI for creating staff accounts yet.
 
 ## Documentation
 

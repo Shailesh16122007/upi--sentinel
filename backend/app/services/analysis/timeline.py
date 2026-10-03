@@ -1,6 +1,7 @@
 """Chronological timeline built only from times stated in evidence (or clearly-labelled approximations)."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from app.services.extraction.entities import IST
@@ -25,8 +26,11 @@ SOURCE_KIND = {
     "CHAT_SCREENSHOT": "Chat screenshot", "CALL_RECORDING": "Call recording", "CALL_LOG": "Call log",
     "BANK_STATEMENT": "Bank statement", "PAYMENT_RECEIPT": "Payment receipt", "COMPLAINT": "Complaint letter",
     "TXN_HISTORY": "Transaction history", "ACCOUNT_LOG": "Account activity log", "SYSTEM_RECORD": "Platform record",
-    "SCREEN_RECORDING": "Screen recording", "MESSAGE": "Message", "IMAGE_OTHER": "Image", "DOCUMENT_OTHER": "Document",
+    "SCREEN_RECORDING": "Screen recording", "EMAIL": "E-mail", "MESSAGE": "Message", "IMAGE_OTHER": "Image", "DOCUMENT_OTHER": "Document",
 }
+
+
+CHAT_PREFIX = re.compile(r"^\[?\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\]?\s*-?\s*", re.I)
 
 
 def source_kinds(ev_ids, evidence) -> list[str]:
@@ -76,8 +80,12 @@ def build(case: dict, evidence: dict[str, dict], entities: list[dict], fused: li
         srcs = ", ".join(evidence[e]["code"] for e in f.sources)
         tag = "Disputed transaction" if f.kind == "DISPUTED" else "Related transaction"
         whos = f.beneficiary_vpa or f.beneficiary
-        simple = (f"{amt} was sent{' to ' + whos if whos else ''}" if f.kind == "DISPUTED"
-                  else f"Another payment of {amt}{' to ' + whos if whos else ''} appears in your evidence")
+        if getattr(f, "direction", None) == "CREDIT":
+            simple = f"{amt} was credited to the account"
+            tag = "Credit (money received)" if f.kind != "DISPUTED" else tag
+        else:
+            simple = (f"{amt} was sent{' to ' + whos if whos else ''}" if f.kind == "DISPUTED"
+                      else f"Another payment of {amt}{' to ' + whos if whos else ''} appears in your evidence")
         add(f.occurred_at, f.precision, "TRANSACTION",
             f"{tag}: {amt} {f.channel or ''} payment to {who}".replace("  ", " ") + f" — corroborated by {srcs}",
             f.sources, [], "DOCUMENTED", simple, f.time_of_day)
@@ -122,8 +130,13 @@ def build(case: dict, evidence: dict[str, dict], entities: list[dict], fused: li
             continue
         for e in entities:
             if e["evidence_id"] == ev["id"] and e["type"] == "DATETIME" and e["time_precision"] == "EXACT":
-                add(e["occurred_at"], "EXACT", "COMMUNICATION", f"Message: “{(e['context'] or '')[:180]}”", [ev["id"]],
-                    [e["id"]], "STATEMENT", f"Message: “{(e['context'] or '')[:140]}”")
+                msg = CHAT_PREFIX.sub("", e["context"] or "").strip()
+                if ev["subtype"] == "EMAIL" and msg.lower().startswith("date:"):
+                    add(e["occurred_at"], "EXACT", "COMMUNICATION", f"E-mail received ({ev['code']})", [ev["id"]], [e["id"]],
+                        "STATEMENT", "E-mail received")
+                    continue
+                add(e["occurred_at"], "EXACT", "COMMUNICATION", f"Message: “{msg[:180]}”", [ev["id"]],
+                    [e["id"]], "STATEMENT", f"Message: “{msg[:140]}”")
 
     # audio: statements, placed in time only if the user said when the call happened
     for ev in evidence.values():

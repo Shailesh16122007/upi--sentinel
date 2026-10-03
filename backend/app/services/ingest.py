@@ -195,7 +195,7 @@ def _subtype(kind: str, text: str, name: str) -> str:
         return "SCREEN_RECORDING"
     if re.search(r"\b(incoming|outgoing|missed)\b.*\bcall|call log|call history", t):
         return "CALL_LOG"
-    is_bank_sms = bool(re.search(r"\b(a/?c|acct|account)\b", t) and re.search(r"\b(debited|credited|withdrawn)\b", t))
+    is_bank_sms = bool(re.search(r"\b(a/?c|acct|account)\b|खात", t) and re.search(r"\b(debited|credited|withdrawn)\b|डेबिट|जमा|क्रेडिट", t))
     time_lines = len(re.findall(r"^\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*[✓✔]{0,2}\s*$", t, re.M))
     is_chat = bool(re.search(r"whatsapp|telegram|\[\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}|^\d{1,2}/\d{1,2}/\d{2,4},\s*\d{1,2}:\d{2}\s*-", t, re.M)) \
         or "chat" in n or time_lines >= 3
@@ -203,6 +203,8 @@ def _subtype(kind: str, text: str, name: str) -> str:
     is_payment_ui = bool(re.search(r"payment successful|paid to|upi transaction id|transaction successful|money sent|sent to|paid successfully|upi ref", t))
     if is_statement:
         return "BANK_STATEMENT"
+    if t.startswith("from:") and "\nsubject:" in t and not is_bank_sms:
+        return "EMAIL"
     if is_bank_sms:
         return "BANK_SMS" if kind in ("MESSAGE", "DOCUMENT") else "BANK_SMS_SCREENSHOT"
     if is_chat:

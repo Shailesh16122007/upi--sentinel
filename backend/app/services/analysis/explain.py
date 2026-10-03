@@ -142,7 +142,10 @@ def victim_view(findings: list[dict], evidence: dict, modus: list[dict]) -> dict
             check.append({"text": "The amount you entered is different from the amount in your files. Both are kept.",
                           "sources": f["sources"]})
         elif c in SIMPLE_MISSING:
-            missing.append({"text": SIMPLE_MISSING[c], "sources": []})
+            partial = f["title"].startswith("Partial")
+            text = ("Your call recording or messages could not be read yet." if c == "MISSING_COMMUNICATION" and partial
+                    else SIMPLE_MISSING[c])
+            missing.append({"text": text, "sources": []})
         elif c == "UNREADABLE_EVIDENCE":
             ev = next((evidence[s["evidence_id"]] for s in f["sources"] if s.get("evidence_id") in evidence), None)
             n = ev["original_name"] if ev else "a file"

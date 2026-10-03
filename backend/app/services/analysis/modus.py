@@ -7,6 +7,8 @@ that fraud occurred.
 """
 from __future__ import annotations
 
+import re
+
 from app.services.extraction import lexicon
 
 CATEGORIES = [
@@ -52,10 +54,10 @@ def _signals(case: dict, evidence: dict, entities: list[dict]) -> dict[str, list
             if cat in CLAIM_SIGNALS:
                 add(CLAIM_SIGNALS[cat], x["value"], x["evidence_id"], x["id"], x["locator"])
             if cat == "REQUESTED_ACTION":
-                for code, keys in (("REMOTE_ACCESS", ("anydesk", "teamviewer", "download", "install", " app")),
-                                   ("CREDENTIAL_REQUEST", ("otp", "pin", "code", "ओटीपी")),
-                                   ("PAYMENT_REQUEST", ("approve", "accept", "request", "pay", "qr", "scan"))):
-                    if any(k in f" {m}" for k in keys):
+                for code, rx in (("REMOTE_ACCESS", r"anydesk|teamviewer|quick ?support|\bdownload|\binstall|\bapp\b"),
+                                 ("CREDENTIAL_REQUEST", r"\botp\b|\bpin\b|\bcode\b|ओटीपी"),
+                                 ("PAYMENT_REQUEST", r"\bapprove|\baccept|\brequest\b|\bpay\b|\bqr\b|\bscan")):
+                    if re.search(rx, m):
                         add(code, x["value"], x["evidence_id"], x["id"], x["locator"])
             if cat == "INDUCEMENT":
                 add("INVESTMENT" if any(k in m for k in ("double", "return", "डबल")) else
@@ -78,7 +80,12 @@ def classify(case: dict, evidence: dict, entities: list[dict]) -> list[dict]:
         sup_groups = {k: sig[k] for k in support if k in sig}
         if not a or not sup_groups:
             continue
-        used = a + [s for v in sup_groups.values() for s in v]
+        used, seen = [], set()
+        for s in a + [s for v in sup_groups.values() for s in v]:
+            k = (s["signal"], s["quote"][:60].lower())
+            if k not in seen:
+                seen.add(k)
+                used.append(s)
         if not any(s["origin"] == "evidence" for s in used):
             continue  # the customer's own words alone are not enough
         groups = 1 + len(sup_groups)

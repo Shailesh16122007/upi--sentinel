@@ -18,18 +18,19 @@ MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", 
 # Tesseract commonly misreads the rupee sign; these are accepted only when directly followed by digits.
 RUPEE_LOOKALIKE = "¥%=€£zZ"
 RE_AMOUNT = re.compile(
-    r"(?P<cur>₹|rs\.?|inr|rupees|रु\.?|रुपये|[" + re.escape(RUPEE_LOOKALIKE) + r"])\s?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+    r"(?P<cur>₹|rs\.?|inr|rupees|रु[.,]?|रुपये|[" + re.escape(RUPEE_LOOKALIKE) + r"])\s{0,12}(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
     r"(?:\s?/-)?(?P<tail>[OoIlSB|]?)", re.I)
-RE_AMOUNT_WORD = re.compile(r"(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s?(?:rupees|rs\.?|inr|रुपये)(?![a-z])", re.I)
+RE_AMOUNT_WORD = re.compile(r"(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s?(?:rupees|rupaye|rupay|rs\.?|inr|रुपये)(?![a-z])", re.I)
 RE_EMAIL = re.compile(r"\b[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*\.[a-z]{2,24}\b", re.I)
 # Indian (1,23,45,678) or international (1,234,567) digit grouping; anything else is a likely OCR slip
 RE_GROUPING_OK = re.compile(r"^(?:\d{1,2}(?:,\d{2})*,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$")
-RE_BARE_AMOUNT = re.compile(r"^\s*(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)\s*$")  # "25,000" alone on a line
+RE_BARE_AMOUNT = re.compile(r"^\s*(?P<sym>[^\w\s]{1,2}\s?)?(?P<num>\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)\s*$")  # "25,000" alone on a line
 
 RE_DATE_DMY_TEXT = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[\s\-/.,]*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s\-/.,']*(\d{4}|\d{2})\b", re.I)
 RE_DATE_MDY_TEXT = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b", re.I)
 RE_DATE_NUM = re.compile(r"\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4}|\d{2})\b")
 RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})")
+DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 RE_TIME_ONLY_LINE = re.compile(r"^\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*(?:[✓✔]{1,2})?\s*$", re.I)
 RE_TIME = re.compile(r"(?<![\d:])(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([ap]\.?\s?m\.?)?(?![\d])", re.I)
 
@@ -38,7 +39,13 @@ REF_LABEL = re.compile(
     r"ref(?:erence)?(?:\s*(?:no|number|id))?|upi(?=\s*[:#]\s*\d)|transaction\s*id|txn\s*(?:id|no)|order\s*id|google\s*pay\s*upi\s*transaction\s*id)"
     r"\.?\s*[:#\-]?\s*(?P<val>[A-Z0-9]{6,24})\b", re.I)
 RE_UTR_BARE = re.compile(r"(?<![\d.,])\d{12}(?![\d,]|\.\d)")
-RE_UPI = re.compile(r"\b[a-z0-9][a-z0-9._-]{1,63}@[a-z]{2,32}\b(?!\.[a-z])", re.I)
+RE_UPI = re.compile(r"\b[a-z0-9][a-z0-9._-]{1,63}@[a-z]{2,32}\b(?![-.]?[a-z0-9])", re.I)
+# Common UPI handles. An unknown handle is still extracted but marked for review (OCR often clips the last letter).
+UPI_HANDLES = set("""ybl ibl axl okaxis oksbi okhdfcbank okicici paytm pthdfc ptsbi ptyes ptaxis apl yapl rapl abfspay axisbank
+    axisb upi icici hdfcbank sbi kotak kmbl idfcbank idfcfirst indus federal fbl yesbank yesg rbl aubank citi hsbc sc dbs
+    pnb barodampay boi cnrb centralbank unionbank uboi ubi idbi iob indianbank allbank kbl kvb tjsb dlb jupiteraxis
+    slice freecharge mobikwik ikwik airtel airtelpaymentsbank jio postbank waaxis wahdfcbank wasbi waicici naviaxis
+    amazonpay apay timecosmos superyes tapicici fam okbizaxis oneyes""".split())
 RE_PHONE = re.compile(r"(?<![\d])(?:\+?91[\s-]?)?([6-9]\d{4})[\s-]?(\d{5})(?![\d])")
 RE_ACCOUNT = re.compile(r"(?:a/?c|acct|account)(?:\s*(?:no\.?|number|ending(?:\s*with)?))?\s*[:#]?\s*((?:[xX*]{2,}|\.{2,})\s?\d{3,6}|\d{9,18})", re.I)
 RE_URL = re.compile(r"\b(?:https?://|www\.)[^\s<>\"')]+|\b[a-z0-9-]+\.(?:in|com|co\.in|net|org|xyz|top|online|site|info|link)/[^\s]*", re.I)
@@ -127,6 +134,23 @@ def parse_times(line: str, date_spans: list[tuple[int, int]]) -> list[tuple[time
     return out
 
 
+RE_BALANCE = re.compile(r"\b(?:opening|closing|available|avl\.?|avail\.?|current|ledger)\s*(?:bal(?:ance)?|bal\.)|\bbalance\b|\bbal\b\s*[:\-]|शेष", re.I)
+RE_CREDIT = re.compile(r"\bcr\b|\bcredit(?:ed)?\b|\breceived\b|\brefund(?:ed)?\b|जमा", re.I)
+RE_DEBIT = re.compile(r"\bdr\b|\bdebit(?:ed)?\b|\bwithdrawn\b|\bpaid\b|\bsent\b|\btransferred\b|डेबिट|कटौती", re.I)
+
+
+def _direction(line: str) -> dict:
+    """Balance figures are not payments; credits are not the money the customer lost."""
+    if RE_BALANCE.search(line):
+        return {"balance": True}
+    cr, dr = RE_CREDIT.search(line), RE_DEBIT.search(line)
+    if cr and not dr:
+        return {"direction": "CREDIT"}
+    if dr and not cr:
+        return {"direction": "DEBIT"}
+    return {}
+
+
 def amount_review(num: str, tail: str, after: str, method: str) -> str | None:
     """Reasons an extracted amount should be checked by a person instead of trusted."""
     if "," in num and not RE_GROUPING_OK.match(num):
@@ -144,6 +168,9 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
             locator_prefix: str = "line") -> list[Ent]:
     ents: list[Ent] = []
     seen: set[tuple[str, str, str]] = set()
+    text = text.translate(DEVANAGARI_DIGITS)
+    if method in ("OCR", "PDF_OCR"):
+        text = re.sub(r"(?<=[a-z])\|(?=[\s.,]|$)", "l", text, flags=re.M)  # 'axl' read as 'ax|'
     lines = text.splitlines()
     all_dates: list[tuple[date, int]] = []
     time_only: list[Ent] = []
@@ -205,6 +232,7 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
             if v <= 0:
                 continue
             attrs = {"ocr_symbol_misread": cur} if lookalike else {}
+            attrs.update(_direction(line))
             conf = 0.75 if lookalike else 0.95
             review = amount_review(m["num"], m["tail"], line[m.end():m.end() + 1], method)
             if review:
@@ -214,11 +242,13 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         for m in RE_AMOUNT_WORD.finditer(line):
             v = _num(m["num"])
             if v > 0:
-                add(Ent("AMOUNT", m[0].strip(), f"{v:.2f}", round(0.9 * lc, 3), loc, ctx))
+                add(Ent("AMOUNT", m[0].strip(), f"{v:.2f}", round(0.9 * lc, 3), loc, ctx, attrs=_direction(line)))
         if method in ("OCR",) and RE_BARE_AMOUNT.match(line) and not any(e.type == "AMOUNT" and e.locator == loc for e in ents):
-            num = RE_BARE_AMOUNT.match(line)["num"]
+            bm = RE_BARE_AMOUNT.match(line)
+            num = bm["num"]
             v = _num(num)
-            why = ("No currency symbol was read — the first digit may be a misread ₹ sign" if num[0] in "4271"
+            why = (f"The currency symbol was not read clearly ('{bm['sym'].strip()}')" if bm["sym"] else
+                   "No currency symbol was read — the first digit may be a misread ₹ sign" if num[0] in "4271"
                    else "No currency symbol was read next to this number")
             add(Ent("AMOUNT", line, f"{v:.2f}", round(0.45 * lc, 3), loc, ctx, attrs={"no_currency_marker": True, "needs_review": why}))
 
@@ -243,8 +273,10 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
         for em in emails:
             add(Ent("EMAIL", em, em, round(0.9 * lc, 3), loc, ctx))
         for m in RE_UPI.finditer(line):
-            if not any(m[0] in u for u in urls) and not any(em.startswith(m[0].lower() + ".") for em in emails):
-                add(Ent("UPI_ID", m[0], m[0].lower(), round(0.93 * lc, 3), loc, ctx))
+            if not any(m[0] in u for u in urls) and not any(m[0].lower() in em for em in emails):
+                handle = m[0].split("@", 1)[1].lower()
+                attrs = {} if handle in UPI_HANDLES else {"needs_review": f"Unrecognised UPI handle '@{handle}' — check against the image"}
+                add(Ent("UPI_ID", m[0], m[0].lower(), round((0.93 if not attrs else 0.6) * lc, 3), loc, ctx, attrs=attrs))
         for m in RE_PHONE.finditer(line):
             n = m[1] + m[2]
             if n in "".join(ref_vals):
@@ -261,6 +293,8 @@ def extract(text: str, *, base_conf: float = 1.0, method: str = "TEXT", line_con
                 add(Ent("ACCOUNT", m[0], f"XX{m[1]}", round(0.8 * lc, 3), loc, ctx, attrs={"last_digits": m[1]}))
         for m in RE_PAYEE.finditer(line):
             name = m["name"].strip(" .")
+            if any(u.lower().startswith(name.lower()) for u in RE_UPI.findall(line)):
+                continue  # "Paid to ravi.store@okhdfcbank": the name is part of the UPI ID
             if len(name) >= 3 and not re.search(r"\b(your|you|the|this|my)\b", name, re.I):
                 add(Ent("PAYEE", name, name.lower(), round(0.8 * lc, 3), loc, ctx))
 
